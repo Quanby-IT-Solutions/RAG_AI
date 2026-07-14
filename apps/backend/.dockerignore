@@ -1,0 +1,36 @@
+# Dependencies
+node_modules
+
+# Build outputs
+.next
+.next-turbo
+out
+coverage
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Misc
+Dockerfile
+.dockerignore
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# AWS (optional - add if you want to ignore AWS deployment files)
+# aws/

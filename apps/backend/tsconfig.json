@@ -1,0 +1,13 @@
+{
+	"extends": "@repo/tsconfig/nest.json",
+	"compilerOptions": {
+		"baseUrl": "./",
+		"outDir": "./dist",
+		"types": ["node", "jest"],
+		"paths": {
+			"@/*": ["./src/*"]
+		}
+	},
+	"include": ["src/**/*", "test/**/*"],
+	"exclude": ["node_modules", "dist", "src/metadata.ts"]
+}

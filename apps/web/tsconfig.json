@@ -1,0 +1,14 @@
+{
+	"extends": "@repo/tsconfig/next.json",
+	"compilerOptions": {
+		"baseUrl": ".",
+		"lib": ["ES2024", "dom", "dom.iterable"],
+		"jsx": "preserve",
+		"paths": {
+			"@/*": ["./*"]
+		},
+		"plugins": [{ "name": "next" }]
+	},
+	"include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+	"exclude": ["node_modules", ".next", ".turbo"]
+}

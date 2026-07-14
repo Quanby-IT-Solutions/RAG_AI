@@ -1,0 +1,5 @@
+{
+	"extends": "@repo/tsconfig/tool",
+	"include": ["."],
+	"exclude": ["node_modules"]
+}

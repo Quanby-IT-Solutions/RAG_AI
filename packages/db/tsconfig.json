@@ -1,0 +1,10 @@
+{
+	"extends": "@repo/tsconfig/pkg",
+	"compilerOptions": {
+		"baseUrl": "./",
+		"rootDir": "./src",
+		"outDir": "./dist"
+	},
+	"include": ["src/**/*"],
+	"exclude": ["drizzle.config.ts"]
+}

@@ -1,0 +1,79 @@
+name: mobile
+description: "A Flutter mobile app for the Turbo Template monorepo."
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Networking
+  dio: ^5.7.0
+  dio_cookie_manager: ^3.1.1
+  cookie_jar: ^4.0.8
+  path_provider: ^2.1.5
+
+  # State management
+  flutter_riverpod: ^3.0.3
+  riverpod_annotation: ^3.0.3
+
+  # Navigation
+  go_router: ^16.3.0
+  persistent_bottom_nav_bar_v2: ^6.2.0
+
+  # Code generation annotations
+  freezed_annotation: ^3.0.0
+  json_annotation: ^4.9.0
+
+  # Environment
+  flutter_dotenv: ^6.0.0
+
+  # Secure storage
+  flutter_secure_storage: ^10.0.0
+
+  # Theming
+  flex_color_scheme: ^8.3.1
+
+  # Local storage for preferences
+  shared_preferences: ^2.5.3
+
+  # Onboarding
+  introduction_screen: ^4.0.0
+
+  # Snackbar notifications
+  awesome_snackbar_content: ^0.1.8
+
+  # Toast notifications
+  toastification: ^3.0.3
+
+  # Feature tour / showcase
+  showcaseview: ^5.0.1
+
+  # Local push notifications
+  awesome_notifications: ^0.11.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+  # Code generation
+  build_runner: ^2.4.14
+  freezed: ^3.0.0
+  json_serializable: ^6.9.4
+  riverpod_generator: ^3.0.3
+  custom_lint: ^0.8.0
+  riverpod_lint: ^3.0.3
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - .env

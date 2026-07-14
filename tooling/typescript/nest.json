@@ -1,0 +1,53 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"compilerOptions": {
+		/** Base Options */
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"target": "ES2024",
+		"lib": ["ES2024"],
+		"allowJs": true,
+		"resolveJsonModule": true,
+		"moduleDetection": "force",
+		"isolatedModules": true,
+
+		/** Keep TSC performant in monorepos */
+		"incremental": true,
+		"disableSourceOfProjectReferenceRedirect": true,
+		"tsBuildInfoFile": "${configDir}/.cache/tsbuildinfo.json",
+
+		/** Strictness */
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"checkJs": true,
+		"strictNullChecks": true,
+		"forceConsistentCasingInFileNames": true,
+
+		/* Base Options */
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"resolvePackageJsonExports": true,
+		"allowSyntheticDefaultImports": true,
+		"baseUrl": "./",
+
+		/* Emit / Output */
+		"declaration": true,
+		"removeComments": true,
+		"sourceMap": true,
+		"outDir": "./dist",
+		"noEmit": false,
+
+		/* Decorators */
+		"emitDecoratorMetadata": true,
+		"experimentalDecorators": true
+	},
+	"watchOptions": {
+		"watchFile": "useFsEvents",
+		"watchDirectory": "useFsEvents",
+		"fallbackPolling": "dynamicPriority",
+		"synchronousWatchDirectory": true,
+		"excludeDirectories": ["**/node_modules", "**/dist"]
+	},
+	"include": ["**/*.cjs", "**/*.js", "**/*.ts", "eslint.config.*", "prettier.config.*"],
+	"exclude": ["node_modules", "build", "dist", ".next", ".expo"]
+}

@@ -1,0 +1,11 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "./tool.json",
+	"compilerOptions": {
+		/** Override for Node.js packages that need JS emission */
+		"emitDeclarationOnly": false,
+		"module": "ES2022",
+		"moduleResolution": "bundler",
+		"rewriteRelativeImportExtensions": true
+	}
+}

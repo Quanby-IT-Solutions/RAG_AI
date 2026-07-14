@@ -1,0 +1,42 @@
+{
+	"name": "@repo/contracts",
+	"version": "0.0.1",
+	"description": "Contract-based API schemas and DTOs using Zod for type-safe validation and OpenAPI documentation.",
+	"author": "",
+	"private": true,
+	"license": "UNLICENSED",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"format": "prettier --check \"src/**/*.ts\"",
+		"format:fix": "prettier --write \"src/**/*.ts\"",
+		"lint": "eslint --flag unstable_native_nodejs_ts_config \"src/**/*.ts\" --fix",
+		"test": "vitest run",
+		"test:cov": "vitest run --coverage",
+		"test:watch": "vitest",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@orpc/contract": "catalog:",
+		"@orpc/nest": "catalog:",
+		"nestjs-zod": "catalog:",
+		"orpc": "^0.1.1",
+		"zod": "catalog:"
+	},
+	"devDependencies": {
+		"@repo/eslint-config": "workspace:*",
+		"@repo/prettier-config": "workspace:*",
+		"@repo/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"@vitest/coverage-v8": "^4.1.2",
+		"@vitest/ui": "^4.1.2",
+		"eslint": "catalog:",
+		"prettier": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "^4.1.2"
+	},
+	"prettier": "@repo/prettier-config"
+}

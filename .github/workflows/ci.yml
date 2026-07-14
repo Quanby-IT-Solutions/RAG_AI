@@ -1,0 +1,14 @@
+name: CI
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quality:
+    uses: Quanby-IT-Solutions/.github/.github/workflows/quality-gate.yml@main
+    secrets: inherit

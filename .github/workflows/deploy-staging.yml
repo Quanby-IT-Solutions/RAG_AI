@@ -1,0 +1,199 @@
+name: Deploy Staging (EC2 + Elastic IP)
+
+on:
+  push:
+    branches:
+      - staging
+    paths-ignore:
+      - "**/*.md"
+      - ".vscode/**"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  deploy-staging:
+    name: Deploy to Staging (EC2 + Elastic IP)
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+      ECR_REPOSITORY_WEB: ${{ vars.ECR_REPOSITORY_WEB }}
+      ECR_REPOSITORY_BACKEND: ${{ vars.ECR_REPOSITORY_BACKEND }}
+      STG_EC2_HOST: ${{ vars.STG_EC2_HOST }}
+      NODE_ENV: "production"
+      NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+      NEXT_PUBLIC_API_BASE_URL: ${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+      NEXT_PUBLIC_API_VERSION: ${{ vars.NEXT_PUBLIC_API_VERSION }}
+      BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${{ secrets.BETTER_AUTH_TRUSTED_ORIGINS }}
+      CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate required variables
+        run: |
+          set -euo pipefail
+          require_var() { [ -n "${!1:-}" ] || { echo "❌ Missing: $1"; exit 1; }; }
+          require_var AWS_REGION
+          require_var ECR_REGISTRY
+          require_var ECR_REPOSITORY_WEB
+          require_var ECR_REPOSITORY_BACKEND
+          require_var STG_EC2_HOST
+          require_var NEXT_PUBLIC_APP_URL
+          require_var NEXT_PUBLIC_API_BASE_URL
+          require_var DATABASE_URL
+          require_var CORS_ORIGINS
+          require_var BETTER_AUTH_SECRET
+          require_var BETTER_AUTH_TRUSTED_ORIGINS
+          echo "✅ All required variables present"
+
+      # ── Build & push Docker images to ECR ──────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-staging-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-buildx-staging-
+
+      - name: Build and push Web image
+        run: |
+          docker buildx build \
+            --file apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
+            --build-arg NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL \
+            --build-arg NEXT_PUBLIC_API_VERSION=${NEXT_PUBLIC_API_VERSION:-v1} \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            --push \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY_WEB:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY_WEB:latest \
+            .
+          rm -rf /tmp/.buildx-cache && mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          echo "✅ Web image pushed: $ECR_REGISTRY/$ECR_REPOSITORY_WEB:$IMAGE_TAG"
+
+      - name: Build and push Backend image
+        run: |
+          docker buildx build \
+            --file apps/backend/Dockerfile \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            --push \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:latest \
+            .
+          rm -rf /tmp/.buildx-cache && mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          echo "✅ Backend image pushed: $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG"
+
+      # ── SSH deploy to EC2 ───────────────────────────────────────
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.STG_EC2_SSH_KEY }}" > /tmp/staging.pem
+          chmod 600 /tmp/staging.pem
+
+      - name: Deploy via SSH
+        run: |
+          ssh -o StrictHostKeyChecking=no -i /tmp/staging.pem ec2-user@$STG_EC2_HOST << DEPLOY
+            set -euo pipefail
+
+            # ECR login on the instance
+            aws ecr get-login-password --region $AWS_REGION | \
+              docker login --username AWS --password-stdin $ECR_REGISTRY
+
+            # Write .env
+            cat > /opt/staging/.env << ENV
+          ECR_REGISTRY=$ECR_REGISTRY
+          ECR_REPOSITORY_WEB=$ECR_REPOSITORY_BACKEND
+          ECR_REPOSITORY_BACKEND=$ECR_REPOSITORY_BACKEND
+          IMAGE_TAG=$IMAGE_TAG
+          NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+          NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+          NEXT_PUBLIC_API_VERSION=${NEXT_PUBLIC_API_VERSION:-v1}
+          DATABASE_URL=$DATABASE_URL
+          CORS_ORIGINS=$CORS_ORIGINS
+          BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
+          BETTER_AUTH_TRUSTED_ORIGINS=$BETTER_AUTH_TRUSTED_ORIGINS
+          GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+          GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+          ENV
+
+            # Write docker-compose.staging.yml
+            cat > /opt/staging/docker-compose.yml << 'COMPOSE'
+          $(cat docker-compose.staging.yml)
+          COMPOSE
+
+            # Pull new images and restart
+            cd /opt/staging
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+
+            echo "✅ Deploy complete"
+          DEPLOY
+
+      # ── Health check ────────────────────────────────────────────
+      - name: Health check
+        run: |
+          echo "Waiting 30s for containers to start..."
+          sleep 30
+
+          MAX=10
+          for i in $(seq 1 $MAX); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              "http://$STG_EC2_HOST:3000/api/v1/health" || echo "000")
+            echo "[$i/$MAX] Backend health: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Backend is healthy"
+              break
+            fi
+            [ "$i" = "$MAX" ] && echo "❌ Health check failed" && exit 1
+            sleep 10
+          done
+
+      - name: Deployment summary
+        run: |
+          echo "==========================================="
+          echo "✅ Staging Deployment Complete!"
+          echo "==========================================="
+          echo "EC2 Host:    $STG_EC2_HOST"
+          echo "Web URL:     $NEXT_PUBLIC_APP_URL"
+          echo "API URL:     $NEXT_PUBLIC_API_BASE_URL"
+          echo "Image Tag:   $IMAGE_TAG"
+          echo "Branch:      staging"
+          echo "Commit:      ${{ github.sha }}"
+          echo "==========================================="

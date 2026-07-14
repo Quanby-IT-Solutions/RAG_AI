@@ -1,0 +1,74 @@
+{
+	"$schema": "https://turborepo.com/schema.json",
+	"ui": "tui",
+	"tasks": {
+		"topo": {
+			"dependsOn": ["^topo"]
+		},
+		"build": {
+			"dependsOn": ["^build", "^lint", "^typecheck"],
+			"outputs": [".cache/tsbuildinfo.json", "dist/**"],
+			"cache": true
+		},
+		"dev": {
+			"cache": false,
+			"persistent": false
+		},
+		"start": {
+			"dependsOn": ["^build", "build"],
+			"cache": false,
+			"persistent": true
+		},
+		"format": {
+			"outputs": [".cache/.prettiercache"],
+			"outputLogs": "new-only"
+		},
+		"lint": {
+			"dependsOn": ["^topo", "^build"],
+			"outputs": [".cache/.eslintcache"],
+			"cache": true
+		},
+		"typecheck": {
+			"dependsOn": ["^topo", "^build"],
+			"outputs": [".cache/tsbuildinfo.json"],
+			"cache": true
+		},
+		"test": {
+			"dependsOn": ["^build", "^test"],
+			"cache": true,
+			"outputs": ["coverage/**"]
+		},
+		"test:cov": {
+			"dependsOn": ["^build", "^test:cov"],
+			"cache": true,
+			"outputs": ["coverage/**"]
+		},
+		"test:e2e": {
+			"cache": false,
+			"persistent": false,
+			"passThroughEnv": ["PLAYWRIGHT_*", "BASE_URL", "BACKEND_URL", "E2E_TEST_EMAIL", "E2E_TEST_PASSWORD", "E2E_TEST_NAME"]
+		},
+		"clean": {
+			"cache": false
+		},
+		"push": {
+			"cache": false,
+			"interactive": true
+		},
+		"studio": {
+			"cache": false,
+			"persistent": true
+		}
+	},
+	"globalEnv": [],
+	"globalPassThroughEnv": [
+		"NODE_ENV",
+		"CI",
+		"VERCEL",
+		"VERCEL_ENV",
+		"VERCEL_URL",
+		"npm_lifecycle_event",
+		"LOCALAPPDATA",
+		"PUB_CACHE"
+	]
+}
