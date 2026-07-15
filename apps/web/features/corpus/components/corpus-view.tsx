@@ -42,6 +42,7 @@ import {
 	type CorpusDocumentUi,
 } from "@/features/corpus/api/corpus.hooks"
 import { JobsPanel } from "@/features/corpus/components/jobs-panel"
+import { ReembedPanel } from "@/features/corpus/components/reembed-panel"
 
 // R1 document state machine badge styling (registered/processing/indexed/failed).
 const statusVariant: Record<CorpusDocumentUi["status"], "secondary" | "default" | "destructive"> = {
@@ -174,6 +175,8 @@ export function CorpusView() {
 			</Card>
 
 			<JobsPanel />
+
+			<ReembedPanel />
 
 			{isPending ? (
 				<div className="flex flex-col gap-2">

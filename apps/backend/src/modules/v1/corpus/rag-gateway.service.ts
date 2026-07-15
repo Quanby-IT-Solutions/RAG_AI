@@ -289,6 +289,42 @@ export class RagGatewayService {
 		})
 	}
 
+	/** IN-8 (Flow D): re-embed lifecycle forwards. */
+	async reembed(input: {
+		action: "start" | "status" | "cutover" | "abort"
+		targetModel?: string
+		userId: string
+		permissions: readonly string[]
+		requestId: string
+		traceId: string
+	}): Promise<unknown> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: input.permissions,
+			requestId: input.requestId,
+			traceId: input.traceId,
+		})
+		const path =
+			input.action === "start" || input.action === "status"
+				? "/internal/reembed"
+				: `/internal/reembed/${input.action}`
+		return this.forward(path, {
+			method: input.action === "status" ? "GET" : "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+				"x-request-id": input.requestId,
+			},
+			body:
+				input.action === "start"
+					? JSON.stringify({ targetModel: input.targetModel })
+					: input.action === "status"
+						? undefined
+						: "{}",
+			failureMessage: "RAG re-embed call failed",
+		})
+	}
+
 	/** Shared transport: hard timeout + uniform error mapping. */
 	private async forward(
 		path: string,

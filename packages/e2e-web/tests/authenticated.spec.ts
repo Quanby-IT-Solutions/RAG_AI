@@ -495,3 +495,20 @@ test.describe("configuration review (OB-5)", () => {
 		await expect(providers.getByText("masked").first()).toBeVisible()
 	})
 })
+
+test.describe("zero-downtime re-embedding console (IN-8)", () => {
+	test("renders migration state with start/cutover/abort controls", async ({ page }) => {
+		await page.goto("/corpus")
+		const panel = page.getByTestId("reembed-panel")
+		await expect(panel).toBeVisible({ timeout: 30_000 })
+		await expect(panel.getByLabel("Target model")).toBeVisible()
+		await expect(panel.getByRole("button", { name: "Start shadow re-embed" })).toBeVisible()
+		await expect(panel.getByRole("button", { name: "Cut over" })).toBeVisible()
+		await expect(panel.getByRole("button", { name: "Abort" })).toBeVisible()
+		// The status badge renders a real state once the query resolves.
+		await expect(panel.locator('[data-slot="badge"]').first()).toHaveText(
+			/aborted|none|cutover|ready|shadowing|verifying|failed/,
+			{ timeout: 15_000 }
+		)
+	})
+})

@@ -131,3 +131,34 @@ export const ChunkInspectionSchema = z.object({
 
 export type InspectedChunk = z.infer<typeof InspectedChunkSchema>
 export type ChunkInspection = z.infer<typeof ChunkInspectionSchema>
+
+
+// ---------------------------------------------------- IN-8: re-embedding
+
+export const ReembedStatusSchema = z.enum([
+	"none",
+	"shadowing",
+	"verifying",
+	"ready",
+	"cutover",
+	"aborted",
+	"failed",
+])
+
+export const ReembedMigrationSchema = z.object({
+	id: z.string().uuid().optional(),
+	targetModel: z.string().optional(),
+	status: ReembedStatusSchema,
+	metrics: z.record(z.string(), z.number()).nullable().optional(),
+	error: z.string().nullable().optional(),
+	triggeredBy: z.string().optional(),
+	createdAt: z.string().optional(),
+	updatedAt: z.string().optional(),
+})
+
+export const StartReembedRequestSchema = z.object({
+	targetModel: z.string().trim().min(1),
+})
+
+export type ReembedMigration = z.infer<typeof ReembedMigrationSchema>
+export type StartReembedRequest = z.infer<typeof StartReembedRequestSchema>

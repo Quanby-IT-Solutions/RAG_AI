@@ -71,6 +71,7 @@ class RetrievalService:
         repository: ChunksRepository,
         reranker: Reranker | None = None,
         expansion_client: SupportsComplete | None = None,
+        active_embedding_resolver: Any = None,
     ) -> None:
         self._settings = settings
         self._embeddings = embeddings
@@ -79,6 +80,9 @@ class RetrievalService:
         self._reranker = reranker if reranker is not None else build_reranker(settings)
         # RT-5: cheap-fast rewording client (None -> multi-query unavailable).
         self._expansion_client = expansion_client
+        # IN-8: async () -> {"column", "model"}; None -> pinned live column.
+        self._active_embedding_resolver = active_embedding_resolver
+        self._target_clients: dict[str, Any] = {}
 
     @traced(name="rag.retrieve")
     async def retrieve(
@@ -126,6 +130,22 @@ class RetrievalService:
         # (RT-3's rerank window reads the same pool).
         pool = max(top_k, self._settings.retrieval_candidate_pool)
 
+        # ── IN-8: resolve the active (column, model) — the pinned-model
+        # invariant holds because both flip together at cutover.
+        active_column = "embedding"
+        embeddings_client = self._embeddings
+        if self._active_embedding_resolver is not None:
+            active = await self._active_embedding_resolver()
+            active_column = active["column"]
+            if active["model"] != self._embeddings.model:
+                client = self._target_clients.get(active["model"])
+                if client is None:
+                    from app.reembed import TargetEmbeddingsClient
+
+                    client = TargetEmbeddingsClient(self._settings, active["model"])
+                    self._target_clients[active["model"]] = client
+                embeddings_client = client
+
         # ── RT-5 multi-query stage: cheap-model rewordings retrieve too.
         use_multi_query = (
             self._settings.multi_query_enabled if multi_query is None else multi_query
@@ -149,6 +169,7 @@ class RetrievalService:
                 k=pool,
                 ef_search=self._settings.hnsw_ef_search,
                 filters=filters,
+                column=active_column,
             )
 
         async def keyword_arm(text: str) -> list[dict[str, Any]]:
@@ -159,7 +180,7 @@ class RetrievalService:
         # Same pinned client as indexing (D1): all variants embed in ONE call.
         query_vectors: list[list[float] | None] = [None] * len(queries)
         if w_vector != 0:
-            vectors, _ = await self._embeddings.embed_texts(queries)
+            vectors, _ = await embeddings_client.embed_texts(queries)
             query_vectors = list(vectors)
 
         # RT-2 AC: both searches execute concurrently (across all variants).
@@ -355,11 +376,25 @@ def get_retrieval_service(request: Request) -> RetrievalService:
         from app.providers import OpenAIChatClient
 
         expansion_client = OpenAIChatClient(settings)
+    # IN-8: the live query path consults the Redis active-embedding pointer
+    # per request (a cutover flips it atomically for every replica).
+    async def resolve_active() -> dict[str, str]:
+        from app.reembed import get_active_embedding
+
+        client = getattr(request.app.state, "reembed_pointer_redis", None)
+        if client is None:
+            import redis.asyncio as aioredis
+
+            client = aioredis.from_url(settings.redis_url, decode_responses=True)
+            request.app.state.reembed_pointer_redis = client
+        return await get_active_embedding(settings, client)
+
     return RetrievalService(
         settings=settings,
         embeddings=get_embeddings_client(request),
         repository=get_chunks_repository(request),
         expansion_client=expansion_client,
+        active_embedding_resolver=resolve_active,
     )
 
 

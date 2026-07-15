@@ -6,6 +6,8 @@ import {
 	DocumentSchema,
 	IngestionJobDetailSchema,
 	IngestionJobSchema,
+	ReembedMigrationSchema,
+	StartReembedRequestSchema,
 } from "./corpus.schema.js"
 
 /**
@@ -39,6 +41,45 @@ export const corpusContract = {
 			})
 			.input(z.object({ id: z.string().uuid() }))
 			.output(ChunkInspectionSchema),
+	},
+	// IN-8 (Flow D): zero-downtime re-embedding. All routes require
+	// corpus.reembed.run; every transition is audited.
+	reembed: {
+		start: oc
+			.route({
+				method: "POST",
+				path: "/corpus/reembed",
+				summary: "Start a shadow re-embed to a new model",
+				tags: ["Corpus"],
+			})
+			.input(StartReembedRequestSchema)
+			.output(ReembedMigrationSchema),
+		status: oc
+			.route({
+				method: "GET",
+				path: "/corpus/reembed",
+				summary: "Latest re-embed migration state",
+				tags: ["Corpus"],
+			})
+			.output(ReembedMigrationSchema),
+		cutover: oc
+			.route({
+				method: "POST",
+				path: "/corpus/reembed/cutover",
+				summary: "Atomically switch the query path to the shadow index",
+				description:
+					"Requires a verified 'ready' migration; below-baseline verification blocks this.",
+				tags: ["Corpus"],
+			})
+			.output(ReembedMigrationSchema),
+		abort: oc
+			.route({
+				method: "POST",
+				path: "/corpus/reembed/abort",
+				summary: "Abort the migration (shadow artifacts removed, serving untouched)",
+				tags: ["Corpus"],
+			})
+			.output(ReembedMigrationSchema),
 	},
 	jobs: {
 		list: oc

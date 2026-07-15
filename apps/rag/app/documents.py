@@ -57,8 +57,8 @@ WHERE document_id = $1 AND NOT (content_hash = ANY($2::text[]))
 _CHUNK_UPSERT_SQL = """
 INSERT INTO chunks
     (document_id, content, embedding, metadata, content_hash, chunk_index,
-     embedding_model, parent_chunk_id)
-VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8)
+     embedding_model, parent_chunk_id, embedding_shadow, shadow_embedding_model)
+VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9::vector, $10)
 ON CONFLICT (content_hash) DO UPDATE SET
     document_id = EXCLUDED.document_id,
     content = EXCLUDED.content,
@@ -66,7 +66,10 @@ ON CONFLICT (content_hash) DO UPDATE SET
     metadata = EXCLUDED.metadata,
     chunk_index = EXCLUDED.chunk_index,
     embedding_model = EXCLUDED.embedding_model,
-    parent_chunk_id = EXCLUDED.parent_chunk_id
+    parent_chunk_id = EXCLUDED.parent_chunk_id,
+    embedding_shadow = COALESCE(EXCLUDED.embedding_shadow, chunks.embedding_shadow),
+    shadow_embedding_model =
+        COALESCE(EXCLUDED.shadow_embedding_model, chunks.shadow_embedding_model)
 RETURNING id, content_hash
 """
 
@@ -233,6 +236,10 @@ class DocumentsRepository:
                             chunk["chunk_index"],
                             chunk["embedding_model"],
                             None,
+                            _vector_literal(chunk["shadow_embedding"])
+                            if chunk.get("shadow_embedding")
+                            else None,
+                            chunk.get("shadow_model"),
                         ),
                         seconds=self._settings.db_timeout_seconds,
                         operation="chunks.upsert_parent",
@@ -251,6 +258,10 @@ class DocumentsRepository:
                             chunk["chunk_index"],
                             chunk["embedding_model"],
                             parent_id,
+                            _vector_literal(chunk["shadow_embedding"])
+                            if chunk.get("shadow_embedding")
+                            else None,
+                            chunk.get("shadow_model"),
                         ),
                         seconds=self._settings.db_timeout_seconds,
                         operation="chunks.upsert",

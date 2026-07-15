@@ -24,6 +24,7 @@ from app.documents import DocumentsRepository
 from app.embeddings import EmbeddingsClient
 from app.indexing import index_document_content
 from app.jobs import JobsRepository
+from app.reembed import ReembedRepository, process_reembed_migration
 from app.tracing import init_tracing, shutdown_tracing, traced
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             repository=repository,
             embeddings=embeddings,
             embedding_cache=embedding_cache,
+            # IN-8 dual-write: new chunks also get shadow embeddings while a
+            # re-embed migration is active.
+            reembed_repository=ctx.get("reembed_repository") or ReembedRepository(settings),
         )
         await jobs.set_document_outcome(
             job_id=job_id,
@@ -175,7 +179,7 @@ def _redis_settings() -> RedisSettings:
 class WorkerSettings:
     """`arq app.worker.WorkerSettings` — the worker process entrypoint."""
 
-    functions = [process_ingestion_job]
+    functions = [process_ingestion_job, process_reembed_migration]
     # CH-3 retention purge, nightly at 03:10 (worker-local time).
     cron_jobs = [cron(purge_expired_conversations, hour=3, minute=10)]
     on_startup = startup

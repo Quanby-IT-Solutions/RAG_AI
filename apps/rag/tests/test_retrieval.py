@@ -58,10 +58,16 @@ class FakeChunksRepository:
         self.by_ids_calls: list[list[str]] = []
 
     async def search_similar(
-        self, *, embedding: list[float], k: int, ef_search: int, filters=None
+        self, *, embedding: list[float], k: int, ef_search: int, filters=None, column="embedding"
     ) -> list[dict[str, Any]]:
         self.calls.append(
-            {"embedding": embedding, "k": k, "ef_search": ef_search, "filters": filters}
+            {
+                "embedding": embedding,
+                "k": k,
+                "ef_search": ef_search,
+                "filters": filters,
+                "column": column,
+            }
         )
         if self.concurrency_probe is not None:
             self.concurrency_probe["vector_started"].set()

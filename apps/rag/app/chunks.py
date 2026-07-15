@@ -70,10 +70,12 @@ def build_metadata_filter(
     return " AND ".join(clauses), params
 
 
-def _vector_sql(filter_clause: str) -> str:
+def _vector_sql(filter_clause: str, column: str = "embedding") -> str:
     """Cosine similarity = 1 - cosine distance. ORDER BY the raw `<=>`
     distance so the HNSW index (vector_cosine_ops) drives the scan; LIMIT
     applies top-k. Filters join `documents` and predicate pre-fusion."""
+    # IN-8: the active column comes from a WHITELIST, never interpolated raw.
+    assert column in ("embedding", "embedding_shadow"), column
     join = "JOIN documents d ON d.id = chunks.document_id" if filter_clause else ""
     # RT-6: parent chunks exist only as swap targets — never searched.
     not_parent = "chunks.metadata->>'role' IS DISTINCT FROM 'parent'"
@@ -81,10 +83,10 @@ def _vector_sql(filter_clause: str) -> str:
     return f"""
 SELECT chunks.id, chunks.document_id, chunks.content, chunks.metadata,
        chunks.chunk_index, chunks.content_hash, chunks.parent_chunk_id,
-       1 - (chunks.embedding <=> $1::vector) AS similarity
+       1 - (chunks.{column} <=> $1::vector) AS similarity
 FROM chunks {join}
 {where}
-ORDER BY chunks.embedding <=> $1::vector
+ORDER BY chunks.{column} <=> $1::vector
 LIMIT $2
 """
 
@@ -156,6 +158,7 @@ class ChunksRepository:
         k: int,
         ef_search: int,
         filters: dict[str, Any] | None = None,
+        column: str = "embedding",
     ) -> list[dict[str, Any]]:
         """HNSW top-k cosine similarity search. Empty corpus -> [] (no error).
 
@@ -175,7 +178,9 @@ class ChunksRepository:
                 )
                 clause, filter_params = build_metadata_filter(filters, start_index=3)
                 rows = await with_hard_timeout(
-                    conn.fetch(_vector_sql(clause), _vector_literal(embedding), k, *filter_params),
+                    conn.fetch(
+                        _vector_sql(clause, column), _vector_literal(embedding), k, *filter_params
+                    ),
                     seconds=self._settings.db_timeout_seconds,
                     operation="chunks.search_similar",
                 )

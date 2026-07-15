@@ -88,6 +88,74 @@ export class CorpusController {
 		})
 	}
 
+	// ── Zero-downtime re-embedding (IN-8, Flow D) ────────────────────────────
+	@StrictThrottle()
+	@RequirePermissions("corpus.reembed.run")
+	@Implement(v1.corpus.reembed.start)
+	async startReembed(
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number }
+	) {
+		return implement(v1.corpus.reembed.start).handler(async ({ input }) => {
+			return (await this.forwardReembed("start", session, request, input.targetModel)) as never
+		})
+	}
+
+	@RequirePermissions("corpus.reembed.run")
+	@Implement(v1.corpus.reembed.status)
+	async reembedStatus(
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number }
+	) {
+		return implement(v1.corpus.reembed.status).handler(async () => {
+			return (await this.forwardReembed("status", session, request)) as never
+		})
+	}
+
+	@StrictThrottle()
+	@RequirePermissions("corpus.reembed.run")
+	@Implement(v1.corpus.reembed.cutover)
+	async reembedCutover(
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number }
+	) {
+		return implement(v1.corpus.reembed.cutover).handler(async () => {
+			return (await this.forwardReembed("cutover", session, request)) as never
+		})
+	}
+
+	@StrictThrottle()
+	@RequirePermissions("corpus.reembed.run")
+	@Implement(v1.corpus.reembed.abort)
+	async reembedAbort(
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number }
+	) {
+		return implement(v1.corpus.reembed.abort).handler(async () => {
+			return (await this.forwardReembed("abort", session, request)) as never
+		})
+	}
+
+	private async forwardReembed(
+		action: "start" | "status" | "cutover" | "abort",
+		session: UserSession,
+		request: Request & { id?: string | number },
+		targetModel?: string
+	) {
+		const access = await this.rbacService.getUserAccess(session.user.id)
+		const correlationId = String(request.id ?? crypto.randomUUID())
+		return this.ragGatewayService
+			.reembed({
+				action,
+				targetModel,
+				userId: session.user.id,
+				permissions: access.permissions,
+				requestId: correlationId,
+				traceId: correlationId,
+			})
+			.catch(toORPCError)
+	}
+
 	// ── Chunk-boundary inspection (IN-5) ─────────────────────────────────────
 	@RequirePermissions("corpus.chunks.inspect")
 	@Implement(v1.corpus.documents.inspectChunks)

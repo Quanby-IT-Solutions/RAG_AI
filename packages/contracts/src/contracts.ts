@@ -64,6 +64,8 @@ export {
 	JobDocumentSchema,
 	InspectedChunkSchema,
 	ChunkInspectionSchema,
+	ReembedMigrationSchema,
+	StartReembedRequestSchema,
 } from "./modules/v1/corpus/corpus.schema.js"
 export type {
 	CorpusDocument,
@@ -76,6 +78,8 @@ export type {
 	JobDocument,
 	InspectedChunk,
 	ChunkInspection,
+	ReembedMigration,
+	StartReembedRequest,
 } from "./modules/v1/corpus/corpus.schema.js"
 
 // Chat (generation) contract + schemas

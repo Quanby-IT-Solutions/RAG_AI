@@ -14,6 +14,12 @@ const vector1536 = customType<{ data: number[]; driverData: string }>({
 	toDriver: v => `[${v.join(",")}]`,
 })
 
+/** Nullable variant for the IN-8 shadow column. */
+const vector1536Nullable = customType<{ data: number[] | null; driverData: string }>({
+	dataType: () => "vector(1536)",
+	toDriver: v => (v === null ? (null as unknown as string) : `[${v.join(",")}]`),
+})
+
 /** Full-text search vector — DB-maintained via GENERATED ALWAYS AS (§3). */
 const tsvector = customType<{ data: string }>({
 	dataType: () => "tsvector",
@@ -322,6 +328,12 @@ export const chunks = createTable("chunks", t => ({
 	parentChunkId: t.uuid("parent_chunk_id").references((): AnyPgColumn => chunks.id, {
 		onDelete: "set null",
 	}),
+	// IN-8 (Flow D): shadow embeddings written by a re-embed migration while
+	// the live query path stays on `embedding`; the active-column pointer in
+	// Redis flips atomically at cutover. Nullable — populated only during a
+	// migration window; abort NULLs it back.
+	embeddingShadow: vector1536Nullable("embedding_shadow"),
+	shadowEmbeddingModel: t.text("shadow_embedding_model"),
 }))
 
 // ============================================================================
@@ -546,6 +558,33 @@ export const evalBaselines = createTable(
 	t => [index("eval_baselines_created_at_idx").on(t.createdAt)]
 )
 
+/**
+ * Re-embed migration state machine (IN-8, Flow D). One non-terminal row at a
+ * time; every transition is audited. Statuses: shadowing -> verifying ->
+ * ready -> cutover | aborted | failed. The pinned-model invariant (index
+ * model == query model) is preserved by the Redis active-column pointer.
+ */
+export const reembedMigrations = createTable(
+	"reembed_migrations",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		targetModel: t.text("target_model").notNull(),
+		status: t
+			.text("status", {
+				enum: ["shadowing", "verifying", "ready", "cutover", "aborted", "failed"],
+			})
+			.notNull()
+			.default("shadowing"),
+		/** EV-2 verification metrics on the shadow index. */
+		metrics: t.jsonb("metrics").$type<Record<string, number>>(),
+		error: t.text("error"),
+		triggeredBy: t.text("triggered_by").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: t.timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("reembed_migrations_created_at_idx").on(t.createdAt)]
+)
+
 // ============================================================================
 // RELATIONS
 // ============================================================================
@@ -650,6 +689,7 @@ export const schema = Object.assign(
 		evalRuns,
 		evalBaselines,
 		embeddingCache,
+		reembedMigrations,
 	},
 	relations
 )

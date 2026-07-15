@@ -25,6 +25,8 @@ async def index_document_content(
     repository: DocumentsRepository,
     embeddings: EmbeddingsClient,
     embedding_cache: "EmbeddingCacheRepository | None" = None,
+    reembed_repository: Any = None,
+    shadow_embeddings: Any = None,
 ) -> dict[str, Any]:
     """Index one normalized document (text/pages live in its metadata jsonb).
 
@@ -118,6 +120,26 @@ async def index_document_content(
             }
             for parent, vector in zip(parents, vectors[len(chunk_list) :], strict=True)
         )
+        # IN-8 dual-write: while a re-embed migration is active, new chunks
+        # also get shadow embeddings (target model, IN-6 cache namespace).
+        migration = None
+        if reembed_repository is not None:
+            migration = await reembed_repository.active_migration()
+        if migration is not None:
+            from app.reembed import TargetEmbeddingsClient
+
+            target = shadow_embeddings or TargetEmbeddingsClient(
+                settings, migration["targetModel"]
+            )
+            shadow_vectors, _ = await embed_with_cache(
+                embeddings=target,
+                cache=embedding_cache or EmbeddingCacheRepository(settings),
+                items=[(row["content_hash"], row["content"]) for row in rows],
+            )
+            for row, vector in zip(rows, shadow_vectors, strict=True):
+                row["shadow_embedding"] = vector
+                row["shadow_model"] = migration["targetModel"]
+
         indexed = await repository.index_chunks(
             document_id=document["id"],
             chunks=rows,

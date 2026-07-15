@@ -28,6 +28,13 @@ class FakeCounterRedis:
         return len(self.incremented)
 
 
+class NullReembedRepository:
+    """IN-8 stub: no active migration -> dual-write stays off in unit tests."""
+
+    async def active_migration(self):
+        return None
+
+
 class NullEmbeddingCache:
     """IN-6 stub: nothing cached, stores are dropped (unit tests hit no DB)."""
 
@@ -76,6 +83,7 @@ def make_ctx(settings, repository, jobs, embeddings) -> dict[str, Any]:
         "embedding_cache": NullEmbeddingCache(),
         # CP-2: generation bumps land here instead of a real Redis.
         "respcache_redis": FakeCounterRedis(),
+        "reembed_repository": NullReembedRepository(),
     }
 
 

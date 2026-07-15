@@ -27,8 +27,9 @@ jest.mock("@orpc/server", () => ({
 jest.mock("@/config/api-versions.config", () => ({
 	v1: {
 		corpus: {
-			documents: { list: {} },
+			documents: { list: {}, inspectChunks: {} },
 			jobs: { list: {}, get: {}, rerun: {} },
+			reembed: { start: {}, status: {}, cutover: {}, abort: {} },
 		},
 	},
 }))

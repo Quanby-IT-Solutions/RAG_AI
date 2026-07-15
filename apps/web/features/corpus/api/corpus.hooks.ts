@@ -285,3 +285,60 @@ export function useChunkInspectionQuery(documentId: string | null) {
 		enabled: Boolean(documentId),
 	})
 }
+
+// ---------------------------------------------------- IN-8: re-embedding
+
+export interface ReembedMigrationUi {
+	id?: string
+	targetModel?: string
+	status: "none" | "shadowing" | "verifying" | "ready" | "cutover" | "aborted" | "failed"
+	metrics?: Record<string, number> | null
+	error?: string | null
+	triggeredBy?: string
+	updatedAt?: string
+}
+
+export const reembedKeys = { status: ["corpus", "reembed"] as const }
+
+async function reembedFetch(path: string, init?: RequestInit): Promise<ReembedMigrationUi> {
+	const response = await fetch(`${API_BASE}${path}`, {
+		credentials: "include",
+		headers: { "Content-Type": "application/json" },
+		...init,
+	})
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	return (await response.json()) as ReembedMigrationUi
+}
+
+export function useReembedStatusQuery() {
+	return useQuery({
+		queryKey: reembedKeys.status,
+		queryFn: () => reembedFetch("/corpus/reembed"),
+		refetchInterval: query => {
+			const status = query.state.data?.status
+			return status === "shadowing" || status === "verifying" ? 3000 : 30000
+		},
+	})
+}
+
+export function useStartReembedMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: (targetModel: string) =>
+			reembedFetch("/corpus/reembed", {
+				method: "POST",
+				body: JSON.stringify({ targetModel }),
+			}),
+		onSettled: () => void queryClient.invalidateQueries({ queryKey: reembedKeys.status }),
+	})
+}
+
+export function useReembedActionMutation(action: "cutover" | "abort") {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: () => reembedFetch(`/corpus/reembed/${action}`, { method: "POST" }),
+		onSettled: () => void queryClient.invalidateQueries({ queryKey: reembedKeys.status }),
+	})
+}
