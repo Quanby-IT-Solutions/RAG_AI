@@ -69,6 +69,8 @@ export const ChatAnswerSchema = z.object({
 	degraded: z.boolean(),
 	/** CP-1: answer served from the response cache (no LLM call). */
 	cached: z.boolean().optional(),
+	/** OB-1: computed USD cost of the model call (null when unpriced/cached). */
+	costUsd: z.number().nullable().optional(),
 })
 
 // ── Conversation history (CH-3) ─────────────────────────────────────────────

@@ -31,6 +31,7 @@ from app.budget import current_context_budget, select_within_budget
 from app.compression import Compressor, build_compressor, compress_with_fallback
 from app.config import Settings
 from app.conversations import ConversationsRepository
+from app.costs import compute_cost_usd
 from app.providers import (
     ChatModelClient,
     ModelRouter,
@@ -45,7 +46,7 @@ from app.retrieval import RetrievalFilters, RetrievalService, get_retrieval_serv
 from app.security import ServicePrincipal, verify_service_jwt
 from app.security_screen import QueryBlockedError, screen_query
 from app.single_flight import SingleFlight, SingleFlightError
-from app.tracing import traced
+from app.tracing import stage, traced
 
 # Backward-compat alias: the GN-1 ChatClient moved to app.providers (GN-4).
 ChatClient = OpenAIChatClient
@@ -267,7 +268,13 @@ class GenerationService:
         check + PII mask BEFORE cache/retrieval/prompt/persistence/logs.
         Blocked queries are audited then raised; otherwise the MASKED query
         is the only form allowed downstream."""
-        result = screen_query(query, self._settings)
+        async with stage("security.screen") as record:
+            result = screen_query(query, self._settings)
+            record(
+                blocked=result.blocked,
+                injection=result.injection,
+                piiTypes=result.pii_types,
+            )
         if result.blocked:
             assert result.injection is not None
             await self._repository.write_audit(
@@ -338,22 +345,32 @@ class GenerationService:
         # the uncompressed set, noted in the trace below.
         compression: dict[str, Any] = {"requested": self._compressor is not None}
         if self._compressor is not None:
-            compression["provider"] = self._compressor.provider
-            compressed, applied = await compress_with_fallback(
-                self._compressor,
-                query=query,
-                chunks=chunks,
-                timeout_seconds=self._settings.compression_timeout_seconds,
-            )
-            compression["applied"] = applied
-            if applied:
-                compression["dropped"] = len(chunks) - len(compressed)
-                chunks = compressed
+            async with stage("compression", chunkCount=len(chunks)) as record:
+                compression["provider"] = self._compressor.provider
+                compressed, applied = await compress_with_fallback(
+                    self._compressor,
+                    query=query,
+                    chunks=chunks,
+                    timeout_seconds=self._settings.compression_timeout_seconds,
+                )
+                compression["applied"] = applied
+                if applied:
+                    compression["dropped"] = len(chunks) - len(compressed)
+                    chunks = compressed
+                record(**compression)
 
         # Budget resolved per request so a config change applies without
         # restart; the order (rank -> select) is contractual per §5.3.
         budget = current_context_budget(self._settings)
-        used_chunks, selection = select_within_budget(chunks, budget=budget)
+        async with stage("budget.selection", budget=budget, retrieved=len(chunks)) as record:
+            used_chunks, selection = select_within_budget(chunks, budget=budget)
+            record(
+                usedCount=len(used_chunks),
+                contextTokens=selection["contextTokens"],
+                # OB-1: retrieved vs used ids recorded SEPARATELY on the span.
+                retrievedIds=[chunk["id"] for chunk in chunks],
+                usedIds=[chunk["id"] for chunk in used_chunks],
+            )
         used_record = [
             {
                 "id": chunk["id"],
@@ -409,7 +426,12 @@ class GenerationService:
 
         # ── CP-1 cache stage (AFTER SC-1, BEFORE retrieval/LLM — contractual).
         if self._response_cache is not None:
-            cached = await self._response_cache.lookup(query=query, filters=filters)
+            async with stage("cache.lookup") as record:
+                cached = await self._response_cache.lookup(query=query, filters=filters)
+                record(
+                    hit=cached is not None,
+                    layer=cached.get("cacheLayer") if cached else None,
+                )
             if cached is not None:
                 return await self._serve_cached(
                     cached=cached,
@@ -500,10 +522,13 @@ class GenerationService:
         selection = prep["selection"]
 
         # Flow B route stage (GN-4/GN-5): decision + breaker state recorded.
-        client, routing = await self._route(query=query, chunks=chunks)
+        async with stage("routing") as record:
+            client, routing = await self._route(query=query, chunks=chunks)
+            record(**{k: routing.get(k) for k in ("tier", "model", "provider", "reason")})
         logger.info("chat.routing %s", json.dumps(routing))
 
         token_usage: dict[str, int] | None = None
+        cost_usd: float | None = None
         degraded = False
         if not used_chunks:
             # Alternate B1: nothing retrieved (or nothing fits the budget) ->
@@ -512,7 +537,14 @@ class GenerationService:
             citations: list[dict[str, Any]] = []
         else:
             try:
-                answer_text, token_usage = await client.complete(prep["messages"])
+                async with stage(
+                    "model.call", model=client.model, provider=client.provider
+                ) as record:
+                    answer_text, token_usage = await client.complete(prep["messages"])
+                    cost_usd = compute_cost_usd(
+                        self._settings, model=client.model, token_usage=token_usage
+                    )
+                    record(tokenUsage=token_usage, costUsd=cost_usd)
             except Exception as exc:
                 # Alternate B2: provider error/timeout -> bounded degradation,
                 # no silent failure; the trace records the failure path.
@@ -579,6 +611,7 @@ class GenerationService:
                 "citationCount": len(citations),
                 "isIDontKnow": is_i_dont_know,
                 "degraded": degraded,
+                "costUsd": cost_usd,
                 "traceId": trace_id,
             },
         )
@@ -594,6 +627,7 @@ class GenerationService:
             "isIDontKnow": is_i_dont_know,
             "degraded": degraded,
             "cached": False,
+            "costUsd": cost_usd,
             "latencyMs": latency_ms,
         }
         # CP-1: successful grounded answers become cache entries (the cache

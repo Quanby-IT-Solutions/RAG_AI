@@ -34,7 +34,7 @@ from app.ingest import get_embeddings_client
 from app.rate_limit import rate_limit
 from app.reranking import Reranker, build_reranker, rerank_with_fallback
 from app.security import verify_service_jwt
-from app.tracing import traced
+from app.tracing import stage, traced
 
 logger = logging.getLogger(__name__)
 
@@ -163,10 +163,15 @@ class RetrievalService:
             query_vectors = list(vectors)
 
         # RT-2 AC: both searches execute concurrently (across all variants).
-        arm_results = await asyncio.gather(
-            *[vector_arm(query_vectors[index]) for index in range(len(queries))],
-            *[keyword_arm(text) for text in queries],
-        )
+        async with stage("retrieval.arms", variants=len(queries)) as record:
+            arm_results = await asyncio.gather(
+                *[vector_arm(query_vectors[index]) for index in range(len(queries))],
+                *[keyword_arm(text) for text in queries],
+            )
+            record(
+                vectorHits=sum(len(r) for r in arm_results[: len(queries)]),
+                keywordHits=sum(len(r) for r in arm_results[len(queries) :]),
+            )
         vector_results = arm_results[: len(queries)]
         keyword_results = arm_results[len(queries) :]
         vector_chunks = vector_results[0]
@@ -177,7 +182,9 @@ class RetrievalService:
             *[(w_vector, chunks) for chunks in vector_results],
             *[(w_keyword, chunks) for chunks in keyword_results],
         ]
-        fused_pool = reciprocal_rank_fusion(rankings, rrf_k=self._settings.rrf_k)
+        async with stage("retrieval.fusion", rankings=len(rankings)) as record:
+            fused_pool = reciprocal_rank_fusion(rankings, rrf_k=self._settings.rrf_k)
+            record(fusedCount=len(fused_pool))
 
         # ── RT-3 rerank stage: re-score the top window jointly with the query.
         # rerank=False (eval A/B) degrades gracefully to fused order; failures
@@ -186,12 +193,16 @@ class RetrievalService:
         reranked = False
         if use_rerank and self._reranker is not None:
             window = self._settings.rerank_window
-            reordered, reranked = await rerank_with_fallback(
-                self._reranker,
-                query=query,
-                chunks=fused_pool[:window],
-                timeout_seconds=self._settings.rerank_timeout_seconds,
-            )
+            async with stage(
+                "retrieval.rerank", window=window, provider=self._reranker.provider
+            ) as record:
+                reordered, reranked = await rerank_with_fallback(
+                    self._reranker,
+                    query=query,
+                    chunks=fused_pool[:window],
+                    timeout_seconds=self._settings.rerank_timeout_seconds,
+                )
+                record(applied=reranked)
             fused_pool = [*reordered, *fused_pool[window:]]
 
         # ── RT-5 MMR stage: greedy relevance-vs-redundancy re-selection of the

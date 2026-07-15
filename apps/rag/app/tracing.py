@@ -9,6 +9,7 @@ import functools
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
 from app.config import Settings
@@ -72,3 +73,60 @@ def traced(
         return wrapper
 
     return decorate
+
+
+@asynccontextmanager
+async def stage(name: str, **attributes: Any):
+    """OB-1: one named child span per Flow B stage, provider-agnostic.
+
+    Yields a setter for output attributes: `outputs = yield`-style usage:
+
+        async with stage("cache.lookup", query_len=n) as record:
+            ...
+            record(hit=True, layer="exact")
+
+    Tracing failures NEVER break the request (best-effort)."""
+    outputs: dict[str, Any] = {}
+
+    def record(**values: Any) -> None:
+        outputs.update(values)
+
+    if _langfuse_client is not None:
+        try:
+            with _langfuse_client.start_as_current_span(name=name) as span:
+                try:
+                    yield record
+                finally:
+                    try:
+                        span.update(input=attributes or None, output=outputs or None)
+                    except Exception:
+                        logger.debug("tracing.stage_update_failed", exc_info=True)
+            return
+        except Exception:
+            logger.debug("tracing.stage_failed", exc_info=True)
+            yield record
+            return
+
+    span_cm = None
+    run_tree = None
+    try:
+        from langsmith.run_helpers import trace as ls_trace
+
+        span_cm = ls_trace(name=name, inputs=attributes or {})
+        run_tree = span_cm.__enter__()
+    except Exception:
+        span_cm = None
+        run_tree = None
+    try:
+        yield record
+    finally:
+        if span_cm is not None:
+            try:
+                if run_tree is not None:
+                    run_tree.end(outputs=outputs or {})
+            except Exception:
+                pass
+            try:
+                span_cm.__exit__(None, None, None)
+            except Exception:
+                logger.debug("tracing.stage_exit_failed", exc_info=True)
