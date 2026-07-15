@@ -3,13 +3,21 @@
   "uid": "ragp-service",
   "schemaVersion": 39,
   "refresh": "30s",
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "panels": [
     {
       "id": 1,
       "title": "Request rate by route",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "sum by (route) (rate(rag_http_requests_total[5m]))",
@@ -21,7 +29,12 @@
       "id": 2,
       "title": "Latency p50 / p95 / p99",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.50, sum by (le) (rate(rag_http_request_duration_seconds_bucket[5m])))",
@@ -41,7 +54,12 @@
       "id": 3,
       "title": "TTFT p95 (streamed answers)",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_chat_ttft_seconds_bucket[5m])))",
@@ -53,7 +71,12 @@
       "id": 4,
       "title": "Token usage (per minute)",
       "type": "timeseries",
-      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "sum by (kind) (rate(rag_chat_tokens_total[5m])) * 60",
@@ -65,7 +88,12 @@
       "id": 5,
       "title": "Cache hit-rate",
       "type": "timeseries",
-      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "sum(rate(rag_cache_lookups_total{result=~\"hits|semanticHits\"}[5m])) / clamp_min(sum(rate(rag_cache_lookups_total[5m])), 1e-9)",
@@ -77,7 +105,12 @@
       "id": 6,
       "title": "Provider 429s / bucket sheds",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "sum by (provider) (rate(rag_provider_429_total[5m]))",
@@ -93,11 +126,58 @@
       "id": 7,
       "title": "Error rate (5xx)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "expr": "sum by (route) (rate(rag_errors_total[5m]))",
           "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "DB pressure (separate from API latency)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (state) (rag_db_connections)",
+          "legendFormat": "conns {{state}}"
+        },
+        {
+          "expr": "rag_db_longest_query_seconds",
+          "legendFormat": "longest query (s)"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "In-flight requests / load sheds",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rag_inflight_requests",
+          "legendFormat": "in-flight"
+        },
+        {
+          "expr": "sum by (reason) (rate(rag_load_shed_total[5m]))",
+          "legendFormat": "shed {{reason}}"
         }
       ]
     }

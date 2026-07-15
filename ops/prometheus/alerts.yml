@@ -53,3 +53,19 @@ groups:
         labels: { severity: warn }
         annotations:
           summary: "CP-4 bucket shedding requests for {{ $labels.provider }}"
+
+      - alert: DBPressure
+        expr: >
+          sum(rag_db_connections) / clamp_min(rag_db_max_connections, 1) > 0.8
+          or rag_db_longest_query_seconds > 30
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "DB pressure: connection saturation >80% or a query stuck >30s"
+
+      - alert: LoadShedding
+        expr: sum(rate(rag_load_shed_total[5m])) > 0
+        for: 5m
+        labels: { severity: warn }
+        annotations:
+          summary: "Replica shedding load (overload or drain) for 5m"

@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     provider_probe_timeout_seconds: float = Field(
         alias="PROVIDER_PROBE_TIMEOUT_SECONDS", default=5.0, gt=0
     )
+    # OB-4: backpressure at the ASGI entry — above this in-flight count new
+    # requests get a fast 503 (no queue buildup).
+    max_inflight_requests: int = Field(alias="MAX_INFLIGHT_REQUESTS", default=100, ge=1)
+    shed_retry_after_seconds: int = Field(alias="SHED_RETRY_AFTER_SECONDS", default=5, ge=1)
 
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)

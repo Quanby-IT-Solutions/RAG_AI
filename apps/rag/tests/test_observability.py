@@ -149,3 +149,69 @@ def test_json_log_formatter_emits_structured_lines():
     assert line["route"] == "POST /internal/chat"
     assert line["status"] == 200
     assert line["durationMs"] == 12.5
+
+
+# ------------------------------------------------------------ OB-4 shedding
+async def test_overload_sheds_fast_503_with_retry_after(settings):
+    import asyncio
+
+    import httpx
+
+    from app.main import create_app
+    from app.retrieval import get_retrieval_service
+
+    app = create_app(settings(MAX_INFLIGHT_REQUESTS="1", SHED_RETRY_AFTER_SECONDS="7"))
+
+    release = asyncio.Event()
+
+    class SlowRetrieval:
+        async def retrieve(self, query, *, k=None, filters=None):
+            await release.wait()
+            return []
+
+    app.dependency_overrides[get_retrieval_service] = lambda: SlowRetrieval()
+    from tests.test_ingest import make_token
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        headers = {"authorization": f"Bearer {make_token()}"}
+        first = asyncio.create_task(
+            client.post("/internal/retrieve", headers=headers, json={"query": "q"})
+        )
+        await asyncio.sleep(0.05)  # first request now occupies the only slot
+
+        shed = await client.post("/internal/retrieve", headers=headers, json={"query": "q"})
+        assert shed.status_code == 503
+        assert shed.headers["retry-after"] == "7"
+        assert "shed" in shed.json()["detail"].lower()
+
+        # /health and /metrics are ALWAYS admitted (LB + Prometheus).
+        assert (await client.get("/metrics")).status_code == 200
+
+        release.set()
+        assert (await first).status_code == 200
+
+
+async def test_draining_flag_sheds_and_fails_readiness(settings):
+    import httpx
+
+    from app.main import create_app
+
+    app = create_app(settings())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        app.state.drain.draining = True  # what SIGTERM flips
+        health = await client.get("/health")
+        body = health.json()
+        assert body["draining"] is True
+        assert body["ready"] is False  # the LB stops routing
+        assert health.status_code == 503
+
+        from tests.test_ingest import make_token
+
+        shed = await client.post(
+            "/internal/retrieve",
+            headers={"authorization": f"Bearer {make_token()}"},
+            json={"query": "q"},
+        )
+        assert shed.status_code == 503

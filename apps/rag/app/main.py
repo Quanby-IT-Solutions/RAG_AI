@@ -96,11 +96,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # OB-2: request-id + latency + HTTP counters + JSON access log.
     app.add_middleware(app_middleware)
 
+    # OB-4: shedding sits OUTERMOST (added last = runs first) so overload and
+    # drain refuse work before any expensive stage.
+    from app.load_shed import DrainState, LoadShedMiddleware
+
+    drain = DrainState()
+    drain.install()
+    app.state.drain = drain
+    app.add_middleware(LoadShedMiddleware, settings=settings, drain=drain)
+
     @app.get("/metrics")
     async def metrics() -> Response:
-        """Prometheus scrape target — no auth/rate-limit (SC-2 exemption)."""
+        """Prometheus scrape target — no auth/rate-limit (SC-2 exemption).
+        OB-4: DB pressure gauges refresh at scrape time (bounded probe)."""
+        from app.load_shed import sample_db_pressure
         from app.metrics import render_latest
 
+        await sample_db_pressure(settings)
         payload, content_type = render_latest()
         return Response(content=payload, media_type=content_type)
 
@@ -109,7 +121,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         checks = await run_health_checks(settings)
         # OB-3: readiness gates on DB + Redis only; provider reachability is
         # informational (breaker owns runtime failover) and interval-cached.
-        ready = all(status == "up" for status in checks.values())
+        # OB-4: a draining replica fails readiness so the LB stops routing.
+        ready = all(status == "up" for status in checks.values()) and not drain.draining
         providers = await health_checks.check_providers(settings)
         degraded = any(status != "up" for status in providers.values())
         if not ready:
@@ -118,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": "unavailable" if not ready else ("degraded" if degraded else "ok"),
             "live": True,
             "ready": ready,
+            "draining": drain.draining,
             "checks": checks,
             "providers": providers,
         }
