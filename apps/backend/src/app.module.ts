@@ -1,8 +1,10 @@
 import { Module } from "@nestjs/common"
 import { ConfigModule } from "@nestjs/config"
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from "@nestjs/core"
+
+import { ApiKeysModule } from "@/common/apikeys/apikeys.module"
 import { ThrottlerModule } from "@nestjs/throttler"
-import { AuthModule } from "@thallesp/nestjs-better-auth"
+import { AuthGuard, AuthModule } from "@thallesp/nestjs-better-auth"
 import { LoggerModule } from "nestjs-pino"
 import { ZodSerializerInterceptor, ZodValidationPipe } from "nestjs-zod"
 
@@ -12,6 +14,7 @@ import { HttpExceptionFilter } from "@/common/filters/http-exception.filter"
 import { buildPinoHttpOptions } from "@/config/pino-logger.config"
 import { V1Module } from "@/modules/v1/v1.module"
 import { skipStrictThrottle } from "@/shared/decorators/strict-throttle.decorator"
+import { ApiKeyAuthGuard } from "@/shared/guards/api-key-auth.guard"
 import { RbacGuard } from "@/shared/guards/rbac.guard"
 import { ThrottlerProxyGuard } from "@/shared/guards/throttler-proxy.guard"
 
@@ -22,6 +25,7 @@ import { env } from "./config/env.config"
 
 @Module({
 	imports: [
+		ApiKeysModule,
 		// Core configuration
 		ConfigModule.forRoot({
 			isGlobal: true,
@@ -55,8 +59,14 @@ import { env } from "./config/env.config"
 				skipIf: skipStrictThrottle,
 			},
 		]),
-		// Authentication (controllers disabled - we register versioned routes in setupBetterAuth)
-		AuthModule.forRoot({ auth: getAuth(), disableControllers: true }),
+		// Authentication (controllers disabled - we register versioned routes in
+		// setupBetterAuth). The global AuthGuard is disabled so the guard chain
+		// below is deterministic: Throttler → ApiKeyAuthGuard → RbacGuard (SC-3).
+		AuthModule.forRoot({
+			auth: getAuth(),
+			disableControllers: true,
+			disableGlobalAuthGuard: true,
+		}),
 		// oRPC setup
 		ORPCCommonModule,
 		// Append-only audit spine (global)
@@ -83,6 +93,13 @@ import { env } from "./config/env.config"
 		{
 			provide: APP_GUARD,
 			useClass: ThrottlerProxyGuard,
+		},
+		// Authentication: session (library AuthGuard, provided below so Nest can
+		// build it here) or x-api-key (SC-3). Must precede RbacGuard.
+		AuthGuard,
+		{
+			provide: APP_GUARD,
+			useClass: ApiKeyAuthGuard,
 		},
 		{
 			provide: APP_GUARD,

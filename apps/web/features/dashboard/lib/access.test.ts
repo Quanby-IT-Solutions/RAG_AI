@@ -154,7 +154,15 @@ describe("navItems", () => {
 			getAccessibleNavItems({ roles: ["System Administrator"], permissions: [] }).map(
 				item => item.label
 			)
-		).toEqual(["Dashboard", "Submit Ticket", "Todos / Posts", "Corpus", "Chat", "User Management"])
+		).toEqual([
+		"Dashboard",
+		"Submit Ticket",
+		"Todos / Posts",
+		"Corpus",
+		"Chat",
+		"User Management",
+		"API Keys",
+	])
 	})
 
 	it("resolves mobile header titles from dashboard routes", () => {

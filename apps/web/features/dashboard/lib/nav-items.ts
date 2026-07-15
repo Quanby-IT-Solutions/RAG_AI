@@ -2,6 +2,7 @@ import {
 	BubbleChatIcon,
 	DashboardSquare01Icon,
 	FolderLibraryIcon,
+	Key01Icon,
 	Task01Icon,
 	Ticket01Icon,
 	UserMultipleIcon,
@@ -63,6 +64,15 @@ export const navItems: readonly DashboardNavItem[] = [
 		icon: UserMultipleIcon,
 		section: "Administration",
 		requiredPermission: ["users.accounts.manage", "users.roles.manage"],
+	},
+	{
+		// Integrator API keys console (SC-3). Keys act with the owner's
+		// delegated scopes; every keyed request is audited server-side.
+		label: "API Keys",
+		href: "/api-keys",
+		icon: Key01Icon,
+		section: "Administration",
+		requiredPermission: "apikeys.keys.manage",
 	},
 ]
 

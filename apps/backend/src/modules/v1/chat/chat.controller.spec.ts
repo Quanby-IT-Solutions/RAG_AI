@@ -132,7 +132,8 @@ describe("ChatController", () => {
 			const guard = new RbacGuard(
 				new Reflector(),
 				guardRbac as unknown as RbacService,
-				auditService as unknown as AuditService
+				auditService as unknown as AuditService,
+				{ authenticate: jest.fn() } as never
 			)
 
 			await expect(guard.canActivate(buildContext())).rejects.toBeInstanceOf(ForbiddenException)
@@ -158,7 +159,8 @@ describe("ChatController", () => {
 			const guard = new RbacGuard(
 				new Reflector(),
 				guardRbac as unknown as RbacService,
-				auditService as unknown as AuditService
+				auditService as unknown as AuditService,
+				{ authenticate: jest.fn() } as never
 			)
 
 			await expect(guard.canActivate(buildContext())).resolves.toBe(true)

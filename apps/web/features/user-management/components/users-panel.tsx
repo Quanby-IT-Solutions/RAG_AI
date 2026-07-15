@@ -172,6 +172,8 @@ export function UsersPanel() {
 								<TableHead>User</TableHead>
 								<TableHead>Roles</TableHead>
 								<TableHead className="w-48">Assign role</TableHead>
+								<TableHead className="w-24">Status</TableHead>
+								<TableHead className="w-28">Access</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -233,6 +235,24 @@ export function UsersPanel() {
 													))}
 												</SelectContent>
 											</Select>
+										</TableCell>
+										<TableCell className="align-top">
+											<Badge variant={user.disabled ? "destructive" : "outline"}>
+												{user.disabled ? "disabled" : "active"}
+											</Badge>
+										</TableCell>
+										<TableCell className="align-top">
+											<Button
+												variant={user.disabled ? "outline" : "destructive"}
+												size="sm"
+												aria-label={`${user.disabled ? "Enable" : "Disable"} ${user.email}`}
+												disabled={setDisabled.isPending}
+												onClick={() =>
+													setDisabled.mutate({ userId: user.id, disabled: !user.disabled })
+												}
+											>
+												{user.disabled ? "Enable" : "Disable"}
+											</Button>
 										</TableCell>
 									</TableRow>
 								)

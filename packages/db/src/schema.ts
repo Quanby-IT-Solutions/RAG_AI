@@ -221,6 +221,37 @@ export const auditLog = createTable("audit_log", t => ({
 }))
 
 // ============================================================================
+// API KEYS (security — SC-3)
+// ============================================================================
+
+/**
+ * Integrator API keys (SC-3). Only a sha256 HASH of the secret is stored —
+ * the plaintext is shown once at creation. `scopes` is the permission-key
+ * subset granted to the key (validated to be within the creator's own
+ * permissions). Revocation is a timestamp so the row remains for audit;
+ * a revoked key 401s immediately (checked per request).
+ */
+export const apiKeys = createTable(
+	"api_keys",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		name: t.text("name").notNull(),
+		keyHash: t.text("key_hash").notNull().unique(),
+		// First characters of the secret for display ("ragp_ab12…").
+		keyPrefix: t.text("key_prefix").notNull(),
+		ownerUserId: t
+			.text("owner_user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		scopes: t.jsonb("scopes").$type<string[]>().notNull(),
+		lastUsedAt: t.timestamp("last_used_at", { withTimezone: true }),
+		revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("api_keys_owner_idx").on(t.ownerUserId)]
+)
+
+// ============================================================================
 // DOCUMENTS (ingestion — Flow A)
 // ============================================================================
 
@@ -500,6 +531,7 @@ export const schema = Object.assign(
 		userRoles,
 		rolePermissions,
 		auditLog,
+		apiKeys,
 		documents,
 		chunks,
 		ingestionJobs,

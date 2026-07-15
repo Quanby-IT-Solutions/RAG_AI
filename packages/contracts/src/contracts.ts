@@ -95,6 +95,19 @@ export type {
 	ConversationDetail,
 } from "./modules/v1/chat/chat.schema.js"
 
+// API keys (security, SC-3) contract + schemas
+export { apiKeysContract } from "./modules/v1/apikeys/apikeys.contract.js"
+export {
+	ApiKeySchema,
+	CreateApiKeyRequestSchema,
+	CreateApiKeyResponseSchema,
+} from "./modules/v1/apikeys/apikeys.schema.js"
+export type {
+	ApiKey,
+	CreateApiKeyRequest,
+	CreateApiKeyResponse,
+} from "./modules/v1/apikeys/apikeys.schema.js"
+
 // Current-user access schemas
 export { meContract } from "./modules/v1/me/me.contract.js"
 export { MePermissionsSchema } from "./modules/v1/me/me.schema.js"

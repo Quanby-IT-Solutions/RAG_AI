@@ -7,6 +7,18 @@ import {
 
 import { RagGatewayService } from "./rag-gateway.service"
 
+jest.mock("@orpc/server", () => ({
+	ORPCError: class ORPCError extends Error {
+		code: string
+		constructor(code: string, opts?: { message?: string }) {
+			super(opts?.message ?? code)
+			this.code = code
+		}
+	},
+	implement: jest.fn(() => ({ handler: jest.fn((fn: () => unknown) => fn()) })),
+}))
+
+
 jest.mock("@/config/env.config", () => ({
 	env: {
 		RAG_SERVICE_URL: "http://rag:8000",

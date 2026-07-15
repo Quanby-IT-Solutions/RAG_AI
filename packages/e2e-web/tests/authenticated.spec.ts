@@ -140,7 +140,11 @@ test.describe("authenticated todos", () => {
 		await expect(checkbox).toBeEnabled()
 
 		// After reload the list may be served from the persisted query cache (no
-		// network request), so just wait for the row to render post-hydration.
+		// network request: staleTime is 30s, so the restored cache is considered
+		// fresh). The IndexedDB persister throttles writes (~1s), so give it a
+		// beat to flush the confirmed row before reloading — otherwise the
+		// restored cache predates the create and the row never renders.
+		await page.waitForTimeout(1_500)
 		await page.reload()
 		await expect(checkbox).toBeVisible({ timeout: 15_000 })
 
@@ -306,10 +310,18 @@ test.describe("conversation history (CH-3)", () => {
 test.describe("user management console (F4)", () => {
 	test("creates a user and toggles disable/enable through the UI", async ({ page }, testInfo) => {
 		await page.goto("/user-management")
-		// Users live in the second tab (default is Roles).
-		await page.getByRole("tab", { name: "Users" }).click()
+		// Users live in the second tab (default is Roles). A click can land
+		// before the tabs hydrate and silently no-op, so retry until the
+		// Users panel actually opens.
+		const usersTab = page.getByRole("tab", { name: "Users" })
+		await expect(usersTab).toBeVisible({ timeout: 30_000 })
+		await expect(async () => {
+			await usersTab.click()
+			await expect(page.getByRole("form", { name: "Create user" })).toBeVisible({
+				timeout: 2_000,
+			})
+		}).toPass({ timeout: 30_000 })
 		const form = page.getByRole("form", { name: "Create user" })
-		await expect(form).toBeVisible({ timeout: 30_000 })
 
 		const email = `e2e-f4-${testInfo.workerIndex}-${Date.now()}@example.com`
 		await form.getByLabel("Name").fill("E2E Provisioned")
@@ -331,5 +343,37 @@ test.describe("user management console (F4)", () => {
 
 		await row.getByRole("button", { name: `Enable ${email}` }).click()
 		await expect(row.getByText("active")).toBeVisible({ timeout: 15_000 })
+	})
+})
+
+test.describe("API keys console (SC-3)", () => {
+	test("creates a scoped key, shows the secret once, and revokes it", async ({
+		page,
+	}, testInfo) => {
+		const keyName = `e2e key ${testInfo.project.name}-${Date.now()}`
+
+		await page.goto("/api-keys")
+		const form = page.getByRole("form", { name: "Create API key" })
+		await expect(form).toBeVisible({ timeout: 15_000 })
+
+		await form.getByLabel("Name").fill(keyName)
+		// Radix renders a hidden native input alongside the checkbox control;
+		// click the visible label text, which toggles the associated checkbox.
+		await form.getByText("corpus.documents.read", { exact: true }).click()
+		await form.getByRole("button", { name: /create key/i }).click()
+
+		// The secret is shown exactly once, with the ragp_ prefix.
+		const notice = page.getByTestId("api-key-secret-notice")
+		await expect(notice).toBeVisible({ timeout: 30_000 })
+		await expect(notice.getByText(/^ragp_/)).toBeVisible()
+
+		// The key lists as active with its scope badge, then revokes in place.
+		const row = page.getByRole("row").filter({ hasText: keyName })
+		await expect(row).toBeVisible({ timeout: 15_000 })
+		await expect(row.getByText("Active")).toBeVisible()
+		await expect(row.getByText("corpus.documents.read")).toBeVisible()
+
+		await row.getByRole("button", { name: `Revoke ${keyName}` }).click()
+		await expect(row.getByText("Revoked")).toBeVisible({ timeout: 15_000 })
 	})
 })

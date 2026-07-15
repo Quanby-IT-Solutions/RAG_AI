@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common"
 
+import { ApiKeysV1Module } from "./apikeys/apikeys.module"
 import { ChatModule } from "./chat/chat.module"
 import { CorpusModule } from "./corpus/corpus.module"
 import { ExamplesModule } from "./examples/examples.module"
@@ -10,6 +11,7 @@ import { TicketsModule } from "./tickets/tickets.module"
 
 @Module({
 	imports: [
+		ApiKeysV1Module,
 		ChatModule,
 		CorpusModule,
 		ExamplesModule,

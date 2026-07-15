@@ -12,6 +12,7 @@ import { fromNodeHeaders } from "better-auth/node"
 import { getAuth } from "@repo/auth"
 
 import { AuditService } from "@/common/audit/audit.service"
+import { ApiKeysService, type ApiKeyPrincipal } from "@/common/apikeys/apikeys.service"
 import { RbacService } from "@/common/rbac/rbac.service"
 import { env } from "@/config/env.config"
 import { REQUIRED_PERMISSIONS_KEY } from "@/shared/decorators/require-permissions.decorator"
@@ -21,7 +22,8 @@ export class RbacGuard implements CanActivate {
 	constructor(
 		private readonly reflector: Reflector,
 		private readonly rbacService: RbacService,
-		private readonly auditService: AuditService
+		private readonly auditService: AuditService,
+		private readonly apiKeysService: ApiKeysService
 	) {}
 
 	async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -59,6 +61,49 @@ export class RbacGuard implements CanActivate {
 			session?: { user?: { id?: string } }
 			user?: { id?: string }
 		}>()
+		// ── SC-3: API-key principals share this guard (Flow E, one interface).
+		// A request carrying x-api-key authenticates as the key: the key's
+		// SCOPES (not the owner's roles) gate the route, revocation is checked
+		// per request (immediate 401), and all integration activity is audited.
+		const rawApiKey = request.headers?.["x-api-key"]
+		if (typeof rawApiKey === "string" && rawApiKey.length > 0) {
+			// ApiKeyAuthGuard (authentication layer) has usually already resolved
+			// the principal; fall back to authenticating here so this guard is
+			// self-contained (unit tests, alternate guard orders).
+			const key =
+				(request as { apiKey?: ApiKeyPrincipal }).apiKey ??
+				(await this.apiKeysService.authenticate(rawApiKey))
+			if (!key || key.revoked) {
+				throw new UnauthorizedException("Invalid or revoked API key")
+			}
+			const route = `${request.method ?? "UNKNOWN"} ${request.originalUrl ?? request.url ?? "unknown"}`
+			const inScope = requiredPermissions.every(permission =>
+				key.scopes.includes(permission)
+			)
+			// All integration activity lands on the audit spine (SC-3 AC).
+			try {
+				await this.auditService.writeAudit({
+					actorId: `apikey:${key.id}`,
+					actorType: "service",
+					action: inScope ? "integration.request" : "rbac.denied",
+					resourceType: "route",
+					resourceId: route,
+					after: inScope ? { scopes: requiredPermissions } : { requiredPermissions },
+				})
+			} catch {
+				// best-effort; the decision below is authoritative
+			}
+			if (!inScope) {
+				throw new ForbiddenException("API key is not scoped for this operation")
+			}
+			void this.apiKeysService.touch(key.id).catch(() => undefined)
+			// Downstream handlers read the acting principal from the session
+			// shape; the key acts on behalf of its owner.
+			request.session = { user: { id: key.ownerUserId } }
+			request.user = { id: key.ownerUserId }
+			return true
+		}
+
 		let userId: string | undefined = request.session?.user?.id ?? request.user?.id
 
 		// The library's AuthGuard (@thallesp/nestjs-better-auth) attaches

@@ -1,5 +1,6 @@
 import { oc } from "@orpc/contract"
 
+import { apiKeysContract } from "./apikeys/apikeys.contract.js"
 import { chatContract } from "./chat/chat.contract.js"
 import { corpusContract } from "./corpus/corpus.contract.js"
 import { v1Example } from "./examples/v1.example.js"
@@ -21,6 +22,7 @@ export const v1Contract = oc.prefix("/v1").router(
 		ticket: ticketContract,
 		corpus: corpusContract,
 		chat: chatContract,
+		apikeys: apiKeysContract,
 	})
 )
 

@@ -3,9 +3,26 @@ import { Reflector } from "@nestjs/core"
 import { Test, type TestingModule } from "@nestjs/testing"
 
 import { AuditService } from "@/common/audit/audit.service"
+import { ApiKeysService } from "@/common/apikeys/apikeys.service"
 import { RbacService } from "@/common/rbac/rbac.service"
 
 import { RbacGuard } from "./rbac.guard"
+
+jest.mock("@/common/database/database.client", () => ({
+	db: {},
+}))
+
+jest.mock("@orpc/server", () => ({
+	ORPCError: class ORPCError extends Error {
+		code: string
+		constructor(code: string, opts?: { message?: string }) {
+			super(opts?.message ?? code)
+			this.code = code
+		}
+	},
+	implement: jest.fn(() => ({ handler: jest.fn((fn: () => unknown) => fn()) })),
+}))
+
 
 jest.mock("@/common/rbac/rbac.service", () => ({
 	RbacService: jest.fn().mockImplementation(() => ({
@@ -58,6 +75,7 @@ const buildContext = (session?: unknown, user?: unknown): ExecutionContext =>
 // shape used in controllers) and falls back to request.user?.id.
 describe("RbacGuard", () => {
 	let guard: RbacGuard
+	let apiKeysService: { authenticate: jest.Mock; touch?: jest.Mock }
 	let reflector: { getAllAndOverride: jest.Mock }
 	let rbacService: { hasAllPermissions: jest.Mock; getMissingPermissions: jest.Mock }
 	let auditService: { writeAudit: jest.Mock }
@@ -69,13 +87,25 @@ describe("RbacGuard", () => {
 		mockGetSession.mockResolvedValue(null)
 
 		const app: TestingModule = await Test.createTestingModule({
-			providers: [RbacGuard, Reflector, RbacService, AuditService],
+			providers: [
+				RbacGuard,
+				Reflector,
+				RbacService,
+				AuditService,
+				{ provide: ApiKeysService, useValue: { authenticate: jest.fn() } },
+			],
 		})
 			.overrideProvider(Reflector)
 			.useValue({ getAllAndOverride: jest.fn() })
 			.compile()
 
 		guard = app.get(RbacGuard)
+		apiKeysService = app.get(ApiKeysService) as unknown as {
+			authenticate: jest.Mock
+			touch?: jest.Mock
+		}
+		apiKeysService.touch = jest.fn().mockResolvedValue(undefined)
+		;(guard as unknown as { apiKeysService: unknown }).apiKeysService = apiKeysService
 		reflector = app.get(Reflector) as unknown as { getAllAndOverride: jest.Mock }
 		rbacService = app.get(RbacService) as unknown as {
 			hasAllPermissions: jest.Mock
@@ -302,5 +332,82 @@ describe("RbacGuard", () => {
 			expect(response).toMatchObject({ message: "Forbidden" })
 			expect((response as Record<string, unknown>).missingPermissions).toBeUndefined()
 		}
+	})
+
+	describe("API-key principals (SC-3)", () => {
+		const keyContext = (headers: Record<string, string>) => {
+			const request = { headers, method: "POST", originalUrl: "/api/v1/chat/query" }
+			return {
+				getHandler: () => ({}),
+				getClass: () => ({}),
+				switchToHttp: () => ({ getRequest: () => request }),
+			} as unknown as Parameters<RbacGuard["canActivate"]>[0]
+		}
+
+		beforeEach(() => {
+			reflector.getAllAndOverride.mockReturnValue(["chat.query.submit"])
+		})
+
+		it("allows an in-scope key, audits the integration call, and acts as the owner", async () => {
+			apiKeysService.authenticate.mockResolvedValue({
+				id: "key-1",
+				ownerUserId: "owner-1",
+				scopes: ["chat.query.submit"],
+				revoked: false,
+			})
+			const context = keyContext({ "x-api-key": "ragp_secret" })
+
+			await expect(guard.canActivate(context)).resolves.toBe(true)
+
+			expect(auditService.writeAudit).toHaveBeenCalledWith(
+				expect.objectContaining({
+					actorId: "apikey:key-1",
+					actorType: "service",
+					action: "integration.request",
+				})
+			)
+			const request = context.switchToHttp().getRequest() as {
+				session?: { user?: { id?: string } }
+			}
+			expect(request.session?.user?.id).toBe("owner-1")
+		})
+
+		it("denies an out-of-scope key with 403 and audits the denial", async () => {
+			apiKeysService.authenticate.mockResolvedValue({
+				id: "key-1",
+				ownerUserId: "owner-1",
+				scopes: ["corpus.documents.read"],
+				revoked: false,
+			})
+
+			await expect(
+				guard.canActivate(keyContext({ "x-api-key": "ragp_secret" }))
+			).rejects.toBeInstanceOf(ForbiddenException)
+
+			expect(auditService.writeAudit).toHaveBeenCalledWith(
+				expect.objectContaining({
+					actorId: "apikey:key-1",
+					actorType: "service",
+					action: "rbac.denied",
+				})
+			)
+		})
+
+		it("rejects revoked and unknown keys with 401 immediately", async () => {
+			apiKeysService.authenticate.mockResolvedValue({
+				id: "key-1",
+				ownerUserId: "owner-1",
+				scopes: ["chat.query.submit"],
+				revoked: true,
+			})
+			await expect(
+				guard.canActivate(keyContext({ "x-api-key": "ragp_secret" }))
+			).rejects.toBeInstanceOf(UnauthorizedException)
+
+			apiKeysService.authenticate.mockResolvedValue(null)
+			await expect(
+				guard.canActivate(keyContext({ "x-api-key": "ragp_unknown" }))
+			).rejects.toBeInstanceOf(UnauthorizedException)
+		})
 	})
 })
