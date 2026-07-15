@@ -59,6 +59,20 @@ class Settings(BaseSettings):
     # default; model routing / second provider arrive with GN-4/GN-5.
     generation_model: str = Field(alias="GENERATION_MODEL", default="gpt-4o-mini", min_length=1)
 
+    # --- Chunking (IN-4) — semantic primary, recursive fallback. Fixed-size
+    # chunking is intentionally NOT selectable (ticket AC): the Literal only
+    # admits meaning-based strategies.
+    chunking_strategy: Literal["semantic", "recursive"] = Field(
+        alias="CHUNKING_STRATEGY", default="semantic"
+    )
+    chunk_min_chars: int = Field(alias="CHUNK_MIN_CHARS", default=200, ge=1)
+    chunk_max_chars: int = Field(alias="CHUNK_MAX_CHARS", default=2000, ge=1)
+    # Adjacent-sentence cosine-distance percentile above which a semantic
+    # boundary is declared (LangChain SemanticChunker convention).
+    semantic_breakpoint_percentile: int = Field(
+        alias="SEMANTIC_BREAKPOINT_PERCENTILE", default=90, ge=50, le=99
+    )
+
     # --- Retrieval (RT-1) — vector top-k over chunks.embedding ---
     retrieval_top_k: int = Field(alias="RETRIEVAL_TOP_K", default=5, ge=1)
     # pgvector HNSW search breadth, applied per query via SET LOCAL hnsw.ef_search.
@@ -78,6 +92,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"EMBEDDING_DIMENSIONS must be {PINNED_EMBEDDING_DIMENSIONS} "
                 f"(pinned, D1); got {self.embedding_dimensions}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_chunk_bounds(self) -> Self:
+        if self.chunk_min_chars >= self.chunk_max_chars:
+            raise ValueError(
+                f"CHUNK_MIN_CHARS ({self.chunk_min_chars}) must be smaller than "
+                f"CHUNK_MAX_CHARS ({self.chunk_max_chars})"
             )
         return self
 

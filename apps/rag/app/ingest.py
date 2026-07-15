@@ -24,7 +24,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
-from app.chunking import build_chunks
+from app.chunking import chunk_document
+from app.config import Settings
 from app.documents import DocumentsRepository
 from app.embeddings import EmbeddingsClient
 from app.loaders import LoaderSpec, resolve_loader, supported_mime_types
@@ -78,17 +79,28 @@ async def _index_document(
     text: str,
     pages: list[dict[str, Any]] | None,
     document_hash: str,
+    settings: Settings,
     repository: DocumentsRepository,
     embeddings: EmbeddingsClient,
     audit: Any,
     retried: bool,
 ) -> dict[str, Any]:
-    """Flow A steps 5-7: chunk -> batch-embed -> upsert chunks -> indexed.
+    """Flow A steps 5-7: chunk (IN-4 chain) -> batch-embed -> upsert chunks
+    -> indexed, with the chunking strategy/fallback recorded on the document.
 
     Any chunk/embed/index error marks the document `failed` with the reason
     (Flow A failure branch — never left stuck in `processing`)."""
     try:
-        chunk_list = build_chunks(text=text, pages=pages, document_hash=document_hash)
+        chunk_list, chunking_meta = await chunk_document(
+            text=text,
+            pages=pages,
+            document_hash=document_hash,
+            embeddings=embeddings,
+            strategy=settings.chunking_strategy,
+            min_chars=settings.chunk_min_chars,
+            max_chars=settings.chunk_max_chars,
+            breakpoint_percentile=settings.semantic_breakpoint_percentile,
+        )
         vectors: list[list[float]] = []
         batches = 0
         if chunk_list:
@@ -104,7 +116,11 @@ async def _index_document(
             }
             for chunk, vector in zip(chunk_list, vectors, strict=True)
         ]
-        indexed = await repository.index_chunks(document_id=document["id"], chunks=rows)
+        indexed = await repository.index_chunks(
+            document_id=document["id"],
+            chunks=rows,
+            metadata_patch={"chunking": chunking_meta},
+        )
     except Exception as exc:
         reason = f"Indexing failed: {exc}" if str(exc) else "Indexing failed"
         failed = await repository.mark_document_failed(document["id"], reason)
@@ -119,6 +135,7 @@ async def _index_document(
             "chunkCount": len(chunk_list),
             "embedBatches": batches,
             "embeddingModel": embeddings.model,
+            "chunking": chunking_meta,
             "retried": retried,
         },
     )
@@ -131,6 +148,7 @@ async def _ingest_document(
     raw: bytes,
     filename: str,
     loader: LoaderSpec,
+    settings: Settings,
     principal: ServicePrincipal,
     repository: DocumentsRepository,
     embeddings: EmbeddingsClient,
@@ -207,6 +225,7 @@ async def _ingest_document(
         text=metadata["text"],
         pages=metadata.get("pages"),
         document_hash=content_hash,
+        settings=settings,
         repository=repository,
         embeddings=embeddings,
         audit=_audit,
@@ -216,6 +235,7 @@ async def _ingest_document(
 
 @router.post("/ingest")
 async def ingest_document(
+    request: Request,
     file: UploadFile,
     principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
     repository: Annotated[DocumentsRepository, Depends(get_documents_repository)],
@@ -246,6 +266,7 @@ async def ingest_document(
         raw=raw,
         filename=file.filename or f"upload.{loader.doc_type}",
         loader=loader,
+        settings=request.app.state.settings,
         principal=principal,
         repository=repository,
         embeddings=embeddings,

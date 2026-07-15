@@ -39,6 +39,14 @@ INSERT INTO audit_log (actor_id, actor_type, action, resource_type, resource_id,
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 """
 
+# Re-chunking a document changes its chunk hashes (IN-4): stale rows that are
+# no longer part of the new chunk set must go in the SAME transaction, or
+# orphans poison retrieval. An empty new set deletes all of the document's rows.
+_CHUNK_DELETE_STALE_SQL = """
+DELETE FROM chunks
+WHERE document_id = $1 AND NOT (content_hash = ANY($2::text[]))
+"""
+
 # Chunk-level idempotency (Flow A / IN-2): upsert on the chunk content_hash so
 # re-running indexing never duplicates rows. The `tsv` column is DB-generated.
 _CHUNK_UPSERT_SQL = """
@@ -56,6 +64,16 @@ ON CONFLICT (content_hash) DO UPDATE SET
 
 _SET_DOCUMENT_STATUS_SQL = """
 UPDATE documents SET status = $2, error = $3 WHERE id = $1
+RETURNING id, source_uri, doc_type, content_hash, status, metadata, error, ingested_at
+"""
+
+# Indexed flip + chunking-metadata merge (IN-4: strategy/fallback recorded on
+# the document row) in one statement.
+_SET_INDEXED_WITH_METADATA_SQL = """
+UPDATE documents
+SET status = 'indexed', error = NULL,
+    metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+WHERE id = $1
 RETURNING id, source_uri, doc_type, content_hash, status, metadata, error, ingested_at
 """
 
@@ -153,17 +171,29 @@ class DocumentsRepository:
         *,
         document_id: str,
         chunks: list[dict[str, Any]],
+        metadata_patch: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Upsert all chunk rows and flip the document to `indexed` in ONE
-        transaction (Flow A steps 6-7) — a partial write can never leave an
-        `indexed` document with missing chunks.
+        """Delete stale chunk rows, upsert the new set, and flip the document
+        to `indexed` in ONE transaction (Flow A steps 6-7) — a partial write
+        can never leave an `indexed` document with missing chunks, and a
+        re-chunk (IN-4: new hashes) never leaves orphans behind.
 
         Each chunk dict carries content, embedding (list[float]), metadata,
-        content_hash, chunk_index, embedding_model. Returns the indexed
-        document row."""
+        content_hash, chunk_index, embedding_model. `metadata_patch` (e.g.
+        IN-4 chunking strategy/fallback info) merges into the document's
+        metadata jsonb. Returns the indexed document row."""
         conn = await self._connect()
         try:
             async with conn.transaction():
+                await with_hard_timeout(
+                    conn.execute(
+                        _CHUNK_DELETE_STALE_SQL,
+                        document_id,
+                        [chunk["content_hash"] for chunk in chunks],
+                    ),
+                    seconds=self._settings.db_timeout_seconds,
+                    operation="chunks.delete_stale",
+                )
                 for chunk in chunks:
                     await with_hard_timeout(
                         conn.execute(
@@ -180,7 +210,11 @@ class DocumentsRepository:
                         operation="chunks.upsert",
                     )
                 row = await with_hard_timeout(
-                    conn.fetchrow(_SET_DOCUMENT_STATUS_SQL, document_id, "indexed", None),
+                    conn.fetchrow(
+                        _SET_INDEXED_WITH_METADATA_SQL,
+                        document_id,
+                        json.dumps(metadata_patch or {}),
+                    ),
                     seconds=self._settings.db_timeout_seconds,
                     operation="documents.set_indexed",
                 )

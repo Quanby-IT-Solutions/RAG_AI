@@ -123,13 +123,23 @@ class FakeRepository:
         return None
 
     async def index_chunks(
-        self, *, document_id: str, chunks: list[dict[str, Any]]
+        self,
+        *,
+        document_id: str,
+        chunks: list[dict[str, Any]],
+        metadata_patch: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Mirrors documents.py: chunk upsert ON CONFLICT (content_hash) plus
-        the status flip to indexed, atomically."""
+        """Mirrors documents.py: stale-hash delete + chunk upsert ON CONFLICT
+        (content_hash) + status flip to indexed + metadata merge, atomically."""
         self.index_calls += 1
         if self.fail_index:
             raise RuntimeError("chunks write failed")
+        new_hashes = {chunk["content_hash"] for chunk in chunks}
+        self.chunks = {
+            content_hash: chunk
+            for content_hash, chunk in self.chunks.items()
+            if chunk["document_id"] != document_id or content_hash in new_hashes
+        }
         for chunk in chunks:
             self.chunks[chunk["content_hash"]] = {**chunk, "document_id": document_id}
         row = self._row_by_id(document_id)
@@ -137,6 +147,7 @@ class FakeRepository:
             return None
         row["status"] = "indexed"
         row["error"] = None
+        row["metadata"] = {**(row["metadata"] or {}), **(metadata_patch or {})}
         return dict(row)
 
     async def mark_document_failed(self, document_id: str, reason: str) -> dict[str, Any] | None:
@@ -406,9 +417,11 @@ async def test_embedding_calls_are_batched_one_call_for_n_chunks(
 
     chunk_count = response.json()["chunkCount"]
     assert chunk_count > 1
-    # ONE provider call carrying all N chunk texts — never one call per chunk.
-    assert len(embeddings.calls) == 1
-    assert len(embeddings.calls[0]) == chunk_count
+    # Batched provider calls only (IN-4 adds ONE sentence-embedding pass for
+    # boundary detection; chunk embedding stays ONE call for all N chunks) —
+    # never one call per chunk.
+    assert len(embeddings.calls) == 2
+    assert len(embeddings.calls[-1]) == chunk_count
 
 
 async def test_reindexing_same_document_keeps_chunk_count_stable(
@@ -495,7 +508,8 @@ async def test_html_upload_indexes_end_to_end(app, repository, embeddings):
     assert row["metadata"]["title"] == "Handbook"
     assert "ignore()" not in row["metadata"]["text"]
     # Same {text, source, metadata} shape as PDF -> same downstream pipeline.
-    assert len(embeddings.calls) == 1  # one batched call, never per-chunk
+    # Batched calls only: one sentence pass (IN-4) + one chunk pass.
+    assert len(embeddings.calls) == 2
 
 
 async def test_docx_upload_indexes_end_to_end(app, repository, embeddings):
@@ -511,7 +525,7 @@ async def test_docx_upload_indexes_end_to_end(app, repository, embeddings):
     assert body["status"] == "indexed"
     assert body["docType"] == "docx"
     assert body["chunkCount"] > 0
-    assert len(embeddings.calls) == 1
+    assert len(embeddings.calls) == 2  # sentence pass + chunk pass, both batched
 
 
 async def test_csv_upload_preserves_sections_into_chunks(app, repository, embeddings):
