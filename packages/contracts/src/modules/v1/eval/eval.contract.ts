@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import {
 	CreateGoldenItemRequestSchema,
+	EvalBaselineSchema,
 	EvalRunComparisonSchema,
 	EvalRunSchema,
 	EvalRunSummarySchema,
@@ -12,6 +13,7 @@ import {
 	GoldenItemSchema,
 	GoldenSetExportSchema,
 	ImportGoldenSetResponseSchema,
+	PromoteBaselineRequestSchema,
 	UpdateGoldenItemRequestSchema,
 } from "./eval.schema.js"
 
@@ -121,5 +123,25 @@ export const evalContract = {
 			})
 			.input(z.object({ baseId: z.string().uuid(), candidateId: z.string().uuid() }))
 			.output(EvalRunComparisonSchema),
+		// EV-4 (Flow F): the baseline ONLY changes via explicit promotion.
+		promote: oc
+			.route({
+				method: "POST",
+				path: "/eval/runs/{id}/promote",
+				summary: "Promote a run to the gate baseline",
+				description:
+					"Requires eval.gate.approve; the promotion is audited and subsequent gates compare against it. The baseline never updates implicitly.",
+				tags: ["Evaluation"],
+			})
+			.input(PromoteBaselineRequestSchema)
+			.output(EvalBaselineSchema),
+		baseline: oc
+			.route({
+				method: "GET",
+				path: "/eval/baseline",
+				summary: "Current approved gate baseline",
+				tags: ["Evaluation"],
+			})
+			.output(EvalBaselineSchema.nullable()),
 	},
 }

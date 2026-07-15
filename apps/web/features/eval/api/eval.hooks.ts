@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import type {
 	CreateGoldenItemRequest,
+	EvalBaseline,
 	EvalRun,
 	ExecuteEvalRunRequest,
 	GoldenChunkSearchRequest,
@@ -175,5 +176,34 @@ export function useEvalRunComparisonQuery(baseId: string | null, candidateId: st
 		queryFn: () =>
 			apiFetch<EvalRunComparisonUi>(`/eval/runs/${baseId}/compare/${candidateId}`),
 		enabled: Boolean(baseId && candidateId && baseId !== candidateId),
+	})
+}
+
+// -------------------------------------------------------------- EV-4: gate
+
+export type EvalBaselineUi = Omit<EvalBaseline, "createdAt"> & { createdAt: string }
+
+export const evalBaselineKeys = {
+	current: ["eval", "baseline"] as const,
+}
+
+export function useEvalBaselineQuery() {
+	return useQuery({
+		queryKey: evalBaselineKeys.current,
+		queryFn: () => apiFetch<EvalBaselineUi | null>("/eval/baseline"),
+	})
+}
+
+export function usePromoteBaselineMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: ({ id, note }: { id: string; note?: string }) =>
+			apiFetch<EvalBaselineUi>(`/eval/runs/${id}/promote`, {
+				method: "POST",
+				body: JSON.stringify(note ? { note } : {}),
+			}),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: evalBaselineKeys.current })
+		},
 	})
 }

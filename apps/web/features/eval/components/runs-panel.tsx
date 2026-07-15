@@ -23,9 +23,11 @@ import {
 	TableRow,
 } from "@/core/components/ui/table"
 import {
+	useEvalBaselineQuery,
 	useEvalRunComparisonQuery,
 	useEvalRunsQuery,
 	useExecuteEvalRunMutation,
+	usePromoteBaselineMutation,
 	type EvalRunSummaryUi,
 } from "@/features/eval/api/eval.hooks"
 
@@ -53,6 +55,8 @@ function statusVariant(status: EvalRunSummaryUi["status"]): "default" | "seconda
 export function RunsPanel() {
 	const { data: runs, isPending, error } = useEvalRunsQuery()
 	const executeRun = useExecuteEvalRunMutation()
+	const { data: baseline } = useEvalBaselineQuery()
+	const promote = usePromoteBaselineMutation()
 
 	const [kText, setKText] = useState("")
 	const [rerankMode, setRerankMode] = useState<"default" | "on" | "off">("default")
@@ -94,6 +98,13 @@ export function RunsPanel() {
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="flex flex-col gap-4">
+				{/* EV-4 (Flow F): the gate compares against this run; it only
+				    changes via an explicit, audited promotion. */}
+				<p className="text-muted-foreground text-xs" data-testid="gate-baseline">
+					{baseline
+						? `Gate baseline: run ${baseline.runId.slice(0, 8)} (git ${baseline.gitSha.slice(0, 10)}), promoted by ${baseline.promotedBy}`
+						: "No gate baseline approved yet — the CI gate is not armed."}
+				</p>
 				<div className="flex items-end gap-2">
 					<div className="flex flex-col gap-2">
 						<Label htmlFor="run-k">k (optional)</Label>
@@ -138,6 +149,11 @@ export function RunsPanel() {
 						{executeRun.error.message}
 					</p>
 				) : null}
+				{promote.error ? (
+					<p role="alert" className="text-destructive text-sm">
+						{promote.error.message}
+					</p>
+				) : null}
 
 				{isPending ? (
 					<div className="flex flex-col gap-2">
@@ -169,6 +185,7 @@ export function RunsPanel() {
 									<TableHead>Items</TableHead>
 									<TableHead>Stale</TableHead>
 									<TableHead>When</TableHead>
+									<TableHead className="text-right">Baseline</TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
@@ -213,6 +230,22 @@ export function RunsPanel() {
 											</TableCell>
 											<TableCell className="text-muted-foreground text-xs">
 												{new Date(run.createdAt).toLocaleString()}
+											</TableCell>
+											<TableCell className="text-right">
+												{baseline?.runId === run.id ? (
+													<Badge>baseline</Badge>
+												) : run.status === "completed" ? (
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														aria-label={`Promote run ${run.id.slice(0, 8)} to baseline`}
+														disabled={promote.isPending}
+														onClick={() => promote.mutate({ id: run.id })}
+													>
+														Promote
+													</Button>
+												) : null}
 											</TableCell>
 										</TableRow>
 									)

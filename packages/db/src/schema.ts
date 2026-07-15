@@ -525,6 +525,27 @@ export const evalRuns = createTable(
 	t => [index("eval_runs_created_at_idx").on(t.createdAt)]
 )
 
+/**
+ * Approved eval baselines (EV-4, Flow F). The CURRENT baseline is the newest
+ * row; the gate compares candidate runs against it and the baseline ONLY
+ * ever changes through an explicit, audited promotion by a holder of
+ * `eval.gate.approve` — never implicitly.
+ */
+export const evalBaselines = createTable(
+	"eval_baselines",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		runId: t
+			.uuid("run_id")
+			.notNull()
+			.references(() => evalRuns.id, { onDelete: "restrict" }),
+		promotedBy: t.text("promoted_by").notNull(),
+		note: t.text("note"),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("eval_baselines_created_at_idx").on(t.createdAt)]
+)
+
 // ============================================================================
 // RELATIONS
 // ============================================================================
@@ -627,6 +648,7 @@ export const schema = Object.assign(
 		messages,
 		goldenItems,
 		evalRuns,
+		evalBaselines,
 		embeddingCache,
 	},
 	relations

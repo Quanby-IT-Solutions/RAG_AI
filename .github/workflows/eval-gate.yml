@@ -1,0 +1,75 @@
+# EV-4 (Flow F): evaluation regression gate. Runs on every merge/PR touching
+# the chunking/embedding/retrieval/rerank/prompting paths, scores the golden
+# set against the CURRENT approved baseline, and BLOCKS deployment when any
+# shared metric drops below baseline - EVAL_GATE_TOLERANCE. The baseline only
+# ever changes via an explicit, audited promotion (eval.gate.approve) in the
+# evaluation console — never from CI.
+name: Eval Gate
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "apps/rag/app/chunking.py"
+      - "apps/rag/app/embeddings.py"
+      - "apps/rag/app/embedding_cache.py"
+      - "apps/rag/app/retrieval.py"
+      - "apps/rag/app/chunks.py"
+      - "apps/rag/app/reranking.py"
+      - "apps/rag/app/expansion.py"
+      - "apps/rag/app/compression.py"
+      - "apps/rag/app/generation.py"
+      - "apps/rag/app/prompts*.py"
+  pull_request:
+    branches: [dev]
+    paths:
+      - "apps/rag/app/chunking.py"
+      - "apps/rag/app/embeddings.py"
+      - "apps/rag/app/embedding_cache.py"
+      - "apps/rag/app/retrieval.py"
+      - "apps/rag/app/chunks.py"
+      - "apps/rag/app/reranking.py"
+      - "apps/rag/app/expansion.py"
+      - "apps/rag/app/compression.py"
+      - "apps/rag/app/generation.py"
+      - "apps/rag/app/prompts*.py"
+  workflow_dispatch:
+
+concurrency:
+  group: eval-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # The gate needs the seeded eval database (golden set + corpus + approved
+    # baseline). EVAL_DATABASE_URL/EVAL_REDIS_URL point at that environment;
+    # without them the job fails loudly rather than green-lighting nothing.
+    env:
+      DATABASE_URL: ${{ secrets.EVAL_DATABASE_URL }}
+      REDIS_URL: ${{ secrets.EVAL_REDIS_URL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      RAG_SERVICE_TOKEN_SECRET: ${{ secrets.RAG_SERVICE_TOKEN_SECRET }}
+      GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install rag dependencies
+        working-directory: apps/rag
+        run: uv sync --frozen
+
+      - name: Run the regression gate
+        working-directory: apps/rag
+        # Exit 1 = regression (deploy blocked); exit 2 = not evaluable
+        # (no baseline / empty golden set) — both fail the job. The JSON
+        # diff report lands in the step output and the artifact below.
+        run: uv run python -m app.eval_gate --generation | tee gate-report.json
+
+      - name: Upload diff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-gate-report
+          path: apps/rag/gate-report.json

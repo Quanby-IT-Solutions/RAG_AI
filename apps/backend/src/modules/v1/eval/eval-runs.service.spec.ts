@@ -13,14 +13,26 @@ jest.mock("@orpc/server", () => ({
 }))
 
 jest.mock("@repo/db/schema", () => ({
-	evalRuns: { id: "id", createdAt: "createdAt" },
+	evalRuns: { id: "id", createdAt: "createdAt", metrics: "metrics", gitSha: "gitSha" },
+	evalBaselines: {
+		id: "id",
+		runId: "runId",
+		promotedBy: "promotedBy",
+		note: "note",
+		createdAt: "createdAt",
+	},
 }))
 
 jest.mock("@/common/database/database.client", () => ({
-	db: { select: jest.fn() },
+	db: { select: jest.fn(), insert: jest.fn() },
 }))
 
 const mockSelect = db.select as jest.Mock
+const mockInsert = db.insert as jest.Mock
+
+function auditServiceMock() {
+	return { writeAudit: jest.fn().mockResolvedValue(undefined) }
+}
 
 function makeRun(overrides: Partial<Record<string, unknown>> = {}) {
 	return {
@@ -51,7 +63,7 @@ describe("EvalRunsService (EV-2)", () => {
 	beforeEach(() => jest.clearAllMocks())
 
 	it("get returns the run and throws NOT_FOUND when missing", async () => {
-		const service = new EvalRunsService()
+		const service = new EvalRunsService(auditServiceMock() as never)
 		stubWhere([makeRun()])
 		await expect(service.get("r1")).resolves.toMatchObject({ id: "r1", gitSha: "sha-1" })
 
@@ -68,13 +80,13 @@ describe("EvalRunsService (EV-2)", () => {
 			}),
 		})
 
-		const [summary] = await new EvalRunsService().list()
+		const [summary] = await new EvalRunsService(auditServiceMock() as never).list()
 		expect(summary).not.toHaveProperty("perItem")
 		expect(summary?.metrics).toEqual({ hitRate: 0.5, mrr: 0.4, itemCount: 2 })
 	})
 
 	it("compare computes candidate minus base for shared metrics only", async () => {
-		const service = new EvalRunsService()
+		const service = new EvalRunsService(auditServiceMock() as never)
 		stubWhere([makeRun({ id: "base", metrics: { hitRate: 0.5, mrr: 0.4 } })])
 		stubWhere([
 			makeRun({ id: "cand", metrics: { hitRate: 0.75, mrr: 0.3, precisionAtK: 0.2 } }),
@@ -88,5 +100,76 @@ describe("EvalRunsService (EV-2)", () => {
 		expect(comparison.deltas).not.toHaveProperty("precisionAtK")
 		expect(comparison.base.id).toBe("base")
 		expect(comparison.candidate.id).toBe("cand")
+	})
+})
+
+describe("EvalRunsService baseline promotion (EV-4)", () => {
+	beforeEach(() => jest.clearAllMocks())
+
+	function stubBaselineJoin(rows: unknown[]) {
+		mockSelect.mockReturnValueOnce({
+			from: jest.fn().mockReturnValue({
+				innerJoin: jest.fn().mockReturnValue({
+					orderBy: jest.fn().mockReturnValue({
+						limit: jest.fn().mockResolvedValue(rows),
+					}),
+				}),
+			}),
+		})
+	}
+
+	it("promote inserts a baseline row and audits with before/after", async () => {
+		const audit = auditServiceMock()
+		const service = new EvalRunsService(audit as never)
+		stubWhere([makeRun({ id: "r2", status: "completed", gitSha: "sha-2" })]) // get(runId)
+		stubBaselineJoin([
+			{
+				id: "b0",
+				runId: "r1",
+				promotedBy: "u0",
+				note: null,
+				createdAt: new Date(),
+				metrics: {},
+				gitSha: "sha-1",
+			},
+		])
+		mockInsert.mockReturnValue({
+			values: jest.fn().mockReturnValue({
+				returning: jest.fn().mockResolvedValue([
+					{
+						id: "b1",
+						runId: "r2",
+						promotedBy: "u1",
+						note: "better",
+						createdAt: new Date(),
+					},
+				]),
+			}),
+		})
+
+		const baseline = await service.promote("u1", "r2", "better")
+
+		expect(baseline.runId).toBe("r2")
+		expect(audit.writeAudit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "eval.gate.promote",
+				before: expect.objectContaining({ runId: "r1" }),
+				after: expect.objectContaining({ runId: "r2", note: "better" }),
+			})
+		)
+	})
+
+	it("promote refuses non-completed runs (baseline never moves implicitly)", async () => {
+		const service = new EvalRunsService(auditServiceMock() as never)
+		stubWhere([makeRun({ id: "r3", status: "failed" })])
+
+		await expect(service.promote("u1", "r3")).rejects.toMatchObject({ code: "CONFLICT" })
+		expect(mockInsert).not.toHaveBeenCalled()
+	})
+
+	it("currentBaseline returns null before any promotion", async () => {
+		const service = new EvalRunsService(auditServiceMock() as never)
+		stubBaselineJoin([])
+		await expect(service.currentBaseline()).resolves.toBeNull()
 	})
 })

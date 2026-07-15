@@ -130,6 +130,8 @@ export {
 	EvalRunItemSchema,
 	EvalRunComparisonSchema,
 	ExecuteEvalRunRequestSchema,
+	EvalBaselineSchema,
+	PromoteBaselineRequestSchema,
 } from "./modules/v1/eval/eval.schema.js"
 export type {
 	GoldenItem,
@@ -146,6 +148,8 @@ export type {
 	EvalRunKind,
 	EvalRunComparison,
 	ExecuteEvalRunRequest,
+	EvalBaseline,
+	PromoteBaselineRequest,
 } from "./modules/v1/eval/eval.schema.js"
 
 // Current-user access schemas

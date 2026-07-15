@@ -140,3 +140,25 @@ export type EvalRun = z.infer<typeof EvalRunSchema>
 export type EvalRunSummary = z.infer<typeof EvalRunSummarySchema>
 export type ExecuteEvalRunRequest = z.infer<typeof ExecuteEvalRunRequestSchema>
 export type EvalRunComparison = z.infer<typeof EvalRunComparisonSchema>
+
+// ---------------------------------------------------------------- EV-4: gate
+
+/** The currently approved baseline (Flow F): newest promotion wins. */
+export const EvalBaselineSchema = z.object({
+	id: z.string().uuid(),
+	runId: z.string().uuid(),
+	promotedBy: z.string(),
+	note: z.string().nullable(),
+	createdAt: isoDate,
+	/** The baseline run's aggregate metrics (what the gate compares against). */
+	metrics: z.record(z.string(), z.number()).nullable(),
+	gitSha: z.string(),
+})
+
+export const PromoteBaselineRequestSchema = z.object({
+	id: z.string().uuid(),
+	note: z.string().trim().max(500).optional(),
+})
+
+export type EvalBaseline = z.infer<typeof EvalBaselineSchema>
+export type PromoteBaselineRequest = z.infer<typeof PromoteBaselineRequestSchema>

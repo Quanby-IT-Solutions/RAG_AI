@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # Code-version stamp recorded on every eval_runs row. Set by the deploy
     # environment (docker build arg / CI); "unknown" flags an unstamped run.
     git_sha: str = Field(alias="GIT_SHA", default="unknown")
+    # EV-4 gate: a metric may drop at most this much below the baseline
+    # (baseline-relative, PRD Annex A#13 — not absolute thresholds).
+    eval_gate_tolerance: float = Field(alias="EVAL_GATE_TOLERANCE", default=0.02, ge=0, le=1)
 
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)

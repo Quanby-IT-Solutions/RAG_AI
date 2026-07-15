@@ -420,6 +420,8 @@ test.describe("retrieval eval runs console (EV-2)", () => {
 		await expect(page.getByRole("button", { name: "Run evaluation" })).toBeVisible({
 			timeout: 15_000,
 		})
+		// EV-4: the gate-baseline banner renders (armed or not).
+		await expect(page.getByTestId("gate-baseline")).toBeVisible()
 
 		await page.getByRole("button", { name: "Run evaluation" }).click()
 		// The run scores the real pipeline (embeddings + SQL), allow time.

@@ -156,4 +156,23 @@ export class EvalController {
 			return this.evalRunsService.compare(input.baseId, input.candidateId)
 		})
 	}
+
+	// ---------------------------------------------------- EV-4: gate baseline
+
+	@StrictThrottle()
+	@RequirePermissions("eval.gate.approve")
+	@Implement(v1.eval.runs.promote)
+	async promoteBaseline(@Session() session: UserSession) {
+		return implement(v1.eval.runs.promote).handler(async ({ input }) => {
+			return this.evalRunsService.promote(session.user.id, input.id, input.note)
+		})
+	}
+
+	@RequirePermissions("eval.runs.execute")
+	@Implement(v1.eval.runs.baseline)
+	async currentBaseline() {
+		return implement(v1.eval.runs.baseline).handler(async () => {
+			return this.evalRunsService.currentBaseline()
+		})
+	}
 }
