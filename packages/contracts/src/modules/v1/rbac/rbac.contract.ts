@@ -13,6 +13,9 @@ import {
 	UpdateRoleRequestSchema,
 	UserRoleMutationResponseSchema,
 	UserWithRolesSchema,
+	CreateUserRequestSchema,
+	CreateUserResponseSchema,
+	SetUserDisabledRequestSchema,
 } from "./rbac.schema.js"
 
 /**
@@ -124,5 +127,29 @@ export const rbacContract = {
 			})
 			.input(RemoveRoleRequestSchema)
 			.output(UserRoleMutationResponseSchema),
+
+		create: oc
+			.route({
+				method: "POST",
+				path: "/rbac/users",
+				summary: "Create a user (admin-provisioned)",
+				description:
+					"F4: create an account with a temporary password. The user can sign in immediately; there is no public registration.",
+				tags: ["RBAC"],
+			})
+			.input(CreateUserRequestSchema)
+			.output(CreateUserResponseSchema),
+
+		setDisabled: oc
+			.route({
+				method: "PUT",
+				path: "/rbac/users/{userId}/disabled",
+				summary: "Disable or re-enable a user",
+				description:
+					"F4: a disabled account cannot obtain new sessions and its existing sessions are revoked. Audited.",
+				tags: ["RBAC"],
+			})
+			.input(SetUserDisabledRequestSchema)
+			.output(UserWithRolesSchema.pick({ id: true, disabled: true })),
 	},
 }

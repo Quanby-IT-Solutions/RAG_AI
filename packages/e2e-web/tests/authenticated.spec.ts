@@ -302,3 +302,34 @@ test.describe("conversation history (CH-3)", () => {
 		})
 	})
 })
+
+test.describe("user management console (F4)", () => {
+	test("creates a user and toggles disable/enable through the UI", async ({ page }, testInfo) => {
+		await page.goto("/user-management")
+		// Users live in the second tab (default is Roles).
+		await page.getByRole("tab", { name: "Users" }).click()
+		const form = page.getByRole("form", { name: "Create user" })
+		await expect(form).toBeVisible({ timeout: 30_000 })
+
+		const email = `e2e-f4-${testInfo.workerIndex}-${Date.now()}@example.com`
+		await form.getByLabel("Name").fill("E2E Provisioned")
+		await form.getByLabel("Email").fill(email)
+		await form.getByLabel("Temporary password").fill("TempPass123!")
+		await form.getByRole("button", { name: /create user/i }).click()
+
+		await expect(page.getByText(`${email} created`, { exact: false })).toBeVisible({
+			timeout: 30_000,
+		})
+
+		// The new user appears in the list as active with a Disable action.
+		const row = page.getByRole("row").filter({ hasText: email })
+		await expect(row).toBeVisible({ timeout: 15_000 })
+		await expect(row.getByText("active")).toBeVisible()
+
+		await row.getByRole("button", { name: `Disable ${email}` }).click()
+		await expect(row.getByText("disabled")).toBeVisible({ timeout: 15_000 })
+
+		await row.getByRole("button", { name: `Enable ${email}` }).click()
+		await expect(row.getByText("active")).toBeVisible({ timeout: 15_000 })
+	})
+})

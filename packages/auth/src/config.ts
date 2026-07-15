@@ -3,6 +3,7 @@ import { betterAuth } from "better-auth"
 import { drizzleAdapter } from "better-auth/adapters/drizzle"
 import { APIError } from "better-auth/api"
 import { openAPI } from "better-auth/plugins"
+import { eq } from "drizzle-orm"
 import { z } from "zod"
 
 import { createDBClient } from "@repo/db/client"
@@ -179,6 +180,26 @@ export function createAuth(): ReturnType<typeof betterAuth> {
 				// product is admin-provisioned only.
 				disableSignUp: !authEnv.AUTH_SIGN_UP_ENABLED,
 				disableImplicitSignUp: !authEnv.AUTH_SIGN_UP_ENABLED,
+			},
+		},
+		// F4: admin-disabled accounts must not obtain new sessions. Enforced at
+		// session creation so it covers email/password AND social sign-in.
+		databaseHooks: {
+			session: {
+				create: {
+					before: async session => {
+						const [account] = await db
+							.select({ disabled: users.disabled })
+							.from(users)
+							.where(eq(users.id, session.userId))
+						if (account?.disabled) {
+							throw new APIError("FORBIDDEN", {
+								message: "This account has been disabled. Contact an administrator.",
+							})
+						}
+						return { data: session }
+					},
+				},
 			},
 		},
 		trustedOrigins: authEnv.BETTER_AUTH_TRUSTED_ORIGINS?.split(",") ?? [],

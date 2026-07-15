@@ -76,6 +76,26 @@ export class RbacController {
 		})
 	}
 
+	// ── F4: admin-provisioned accounts ───────────────────────────────────────
+
+	@StrictThrottle()
+	@RequirePermissions("users.accounts.manage")
+	@Implement(v1.rbac.users.create)
+	async createUser(@Session() session: UserSession) {
+		return implement(v1.rbac.users.create).handler(async ({ input }) => {
+			return this.rbacAdminService.createUser(input, session.user.id)
+		})
+	}
+
+	@StrictThrottle()
+	@RequirePermissions("users.accounts.manage")
+	@Implement(v1.rbac.users.setDisabled)
+	async setUserDisabled(@Session() session: UserSession) {
+		return implement(v1.rbac.users.setDisabled).handler(async ({ input }) => {
+			return this.rbacAdminService.setUserDisabled(input, session.user.id)
+		})
+	}
+
 	@StrictThrottle()
 	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.users.assignRole)

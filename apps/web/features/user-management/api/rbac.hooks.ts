@@ -147,3 +147,33 @@ export function useRemoveRoleMutation() {
 		},
 	})
 }
+
+// ── F4: admin-provisioned accounts ──────────────────────────────────────────
+
+export function useCreateUserMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: (input: { name: string; email: string; temporaryPassword: string }) =>
+			apiFetch<{ id: string; name: string; email: string }>("/rbac/users", {
+				method: "POST",
+				body: JSON.stringify(input),
+			}),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: rbacKeys.users })
+		},
+	})
+}
+
+export function useSetUserDisabledMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: ({ userId, disabled }: { userId: string; disabled: boolean }) =>
+			apiFetch<{ id: string; disabled: boolean }>(`/rbac/users/${userId}/disabled`, {
+				method: "PUT",
+				body: JSON.stringify({ disabled }),
+			}),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: rbacKeys.users })
+		},
+	})
+}

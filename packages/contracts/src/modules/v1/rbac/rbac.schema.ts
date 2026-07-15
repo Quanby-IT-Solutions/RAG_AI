@@ -65,6 +65,26 @@ export const UserWithRolesSchema = z.object({
 	name: z.string().nullable(),
 	email: z.string(),
 	roles: z.array(z.string()),
+	// F4: disabled accounts cannot sign in and their sessions are revoked.
+	disabled: z.boolean(),
+})
+
+/** F4: admin-provisioned user creation (email + temp password). */
+export const CreateUserRequestSchema = z.object({
+	name: z.string().trim().min(1).max(120),
+	email: z.string().trim().email().max(254),
+	temporaryPassword: z.string().min(8).max(128),
+})
+
+export const CreateUserResponseSchema = z.object({
+	id: z.string(),
+	name: z.string(),
+	email: z.string(),
+})
+
+export const SetUserDisabledRequestSchema = z.object({
+	userId: z.string().min(1),
+	disabled: z.boolean(),
 })
 
 /** Assign route input: userId from path + roleName from body */
@@ -94,5 +114,8 @@ export type UpdateRoleRequest = z.infer<typeof UpdateRoleRequestSchema>
 export type SetRolePermissionsRequest = z.infer<typeof SetRolePermissionsRequestSchema>
 export type PermissionCatalogEntry = z.infer<typeof PermissionSchema>
 export type UserWithRoles = z.infer<typeof UserWithRolesSchema>
+export type CreateUserRequest = z.infer<typeof CreateUserRequestSchema>
+export type CreateUserResponse = z.infer<typeof CreateUserResponseSchema>
+export type SetUserDisabledRequest = z.infer<typeof SetUserDisabledRequestSchema>
 export type AssignRoleRequest = z.infer<typeof AssignRoleRequestSchema>
 export type RemoveRoleRequest = z.infer<typeof RemoveRoleRequestSchema>

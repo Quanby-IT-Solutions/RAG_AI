@@ -1,10 +1,12 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { Cancel01Icon, UserGroupIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { Badge } from "@/core/components/ui/badge"
+import { Button } from "@/core/components/ui/button"
+import { Input } from "@/core/components/ui/input"
 import {
 	Empty,
 	EmptyDescription,
@@ -31,8 +33,10 @@ import {
 import { useRateLimitToast } from "@/core/hooks/use-rate-limit-toast"
 import {
 	useAssignRoleMutation,
+	useCreateUserMutation,
 	useRemoveRoleMutation,
 	useRolesQuery,
+	useSetUserDisabledMutation,
 	useUsersQuery,
 } from "@/features/user-management/api/rbac.hooks"
 
@@ -41,6 +45,30 @@ export function UsersPanel() {
 	const { data: roles } = useRolesQuery()
 	const assignRole = useAssignRoleMutation()
 	const removeRole = useRemoveRoleMutation()
+	const createUser = useCreateUserMutation()
+	const setDisabled = useSetUserDisabledMutation()
+	const [newName, setNewName] = useState("")
+	const [newEmail, setNewEmail] = useState("")
+	const [newPassword, setNewPassword] = useState("")
+	const [createdNotice, setCreatedNotice] = useState<string | null>(null)
+
+	function handleCreateUser(event: React.FormEvent) {
+		event.preventDefault()
+		setCreatedNotice(null)
+		createUser.mutate(
+			{ name: newName.trim(), email: newEmail.trim(), temporaryPassword: newPassword },
+			{
+				onSuccess: created => {
+					setCreatedNotice(
+						`${created.email} created — share the temporary password with them securely; it is not shown again.`
+					)
+					setNewName("")
+					setNewEmail("")
+					setNewPassword("")
+				},
+			}
+		)
+	}
 
 	// Live 429 countdowns; keep only the triggering control disabled per window.
 	const assignRateLimit = useRateLimitToast(assignRole.error, { toastId: "rbac-assign-role" })
@@ -52,8 +80,75 @@ export function UsersPanel() {
 		<div className="flex flex-col gap-4">
 			<div>
 				<h2 className="text-lg font-semibold">Users</h2>
-				<p className="text-muted-foreground text-sm">Assign and remove roles for each user.</p>
+				<p className="text-muted-foreground text-sm">
+					Create accounts, assign roles, and disable access. There is no public registration.
+				</p>
 			</div>
+
+			{/* F4: admin-provisioned account creation (email + temp password). */}
+			<form
+				onSubmit={handleCreateUser}
+				className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-end"
+				aria-label="Create user"
+			>
+				<div className="flex-1">
+					<label htmlFor="new-user-name" className="text-xs font-medium">
+						Name
+					</label>
+					<Input
+						id="new-user-name"
+						value={newName}
+						onChange={event => setNewName(event.target.value)}
+						required
+						disabled={createUser.isPending}
+					/>
+				</div>
+				<div className="flex-1">
+					<label htmlFor="new-user-email" className="text-xs font-medium">
+						Email
+					</label>
+					<Input
+						id="new-user-email"
+						type="email"
+						value={newEmail}
+						onChange={event => setNewEmail(event.target.value)}
+						required
+						disabled={createUser.isPending}
+					/>
+				</div>
+				<div className="flex-1">
+					<label htmlFor="new-user-password" className="text-xs font-medium">
+						Temporary password
+					</label>
+					<Input
+						id="new-user-password"
+						type="text"
+						value={newPassword}
+						onChange={event => setNewPassword(event.target.value)}
+						minLength={8}
+						required
+						disabled={createUser.isPending}
+					/>
+				</div>
+				<Button type="submit" disabled={createUser.isPending}>
+					{createUser.isPending ? "Creating..." : "Create user"}
+				</Button>
+			</form>
+			{createUser.isError ? (
+				<p className="text-destructive text-xs" role="alert">
+					{createUser.error instanceof Error ? createUser.error.message : "Failed to create user"}
+				</p>
+			) : null}
+			{createdNotice ? (
+				<p className="text-muted-foreground text-xs" role="status">
+					{createdNotice}
+				</p>
+			) : null}
+			{setDisabled.isError ? (
+				<p className="text-destructive text-xs" role="alert">
+					{setDisabled.error instanceof Error ? setDisabled.error.message : "Failed to update user"}
+				</p>
+			) : null}
 
 			{isLoading ? (
 				<div className="flex flex-col gap-2">

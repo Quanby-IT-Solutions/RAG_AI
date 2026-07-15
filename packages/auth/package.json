@@ -30,6 +30,7 @@
 		"@repo/db": "workspace:*",
 		"@t3-oss/env-core": "catalog:",
 		"better-auth": "catalog:",
+		"drizzle-orm": "catalog:",
 		"nodemailer": "^6.9.16",
 		"zod": "catalog:"
 	},

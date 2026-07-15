@@ -29,6 +29,9 @@ export const users = createTable("users", t => ({
 	email: t.text("email").notNull().unique(),
 	emailVerified: t.boolean("email_verified").default(false).notNull(),
 	image: t.text("image"),
+	// F4: admin-disabled accounts cannot sign in (enforced by the Better Auth
+	// session-create hook in packages/auth) and their sessions are revoked.
+	disabled: t.boolean("disabled").default(false).notNull(),
 	createdAt: t.timestamp("created_at").notNull().defaultNow(),
 	updatedAt: t.timestamp("updated_at").notNull().defaultNow(),
 }))

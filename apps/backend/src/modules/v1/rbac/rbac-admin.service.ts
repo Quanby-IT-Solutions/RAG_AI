@@ -1,3 +1,4 @@
+import { randomBytes, randomUUID, scryptSync } from "node:crypto"
 import { Injectable } from "@nestjs/common"
 import { ORPCError } from "@orpc/server"
 import { eq, inArray, sql } from "drizzle-orm"
@@ -14,8 +15,10 @@ import {
 	type SetRolePermissionsRequest,
 	type UpdateRoleRequest,
 	type UserWithRoles,
+	type CreateUserRequest,
+	type SetUserDisabledRequest,
 } from "@repo/contracts"
-import { permissions, rolePermissions, roles, userRoles, users } from "@repo/db/schema"
+import { accounts, permissions, rolePermissions, roles, sessions, userRoles, users } from "@repo/db/schema"
 
 import { AuditService } from "@/common/audit/audit.service"
 import { db } from "@/common/database/database.client"
@@ -185,7 +188,99 @@ export class RbacAdminService {
 			name: user.name,
 			email: user.email,
 			roles: (rolesByUser.get(user.id) ?? []).sort(),
+			disabled: user.disabled,
 		}))
+	}
+
+	/**
+	 * F4: admin-provisioned account creation (no public registration). Same
+	 * scrypt credential format Better Auth verifies (mirrors packages/db seed);
+	 * the user can sign in with the temporary password immediately.
+	 */
+	async createUser(payload: CreateUserRequest, actorId: string) {
+		const [existing] = await db.select().from(users).where(eq(users.email, payload.email))
+		if (existing) {
+			throw new ORPCError("CONFLICT", {
+				message: `A user with email ${payload.email} already exists`,
+			})
+		}
+
+		const userId = randomUUID()
+		await db.transaction(async tx => {
+			await tx.insert(users).values({
+				id: userId,
+				name: payload.name,
+				email: payload.email,
+				emailVerified: true, // admin-provisioned: no verification loop
+			})
+			await tx.insert(accounts).values({
+				id: randomUUID(),
+				userId,
+				providerId: "credential",
+				accountId: userId,
+				password: this.hashPassword(payload.temporaryPassword),
+			})
+		})
+
+		await this.auditService.writeAudit({
+			actorId,
+			actorType: "user",
+			action: "users.accounts.create",
+			resourceType: "user",
+			resourceId: userId,
+			after: { email: payload.email, name: payload.name },
+		})
+
+		return { id: userId, name: payload.name, email: payload.email }
+	}
+
+	/**
+	 * F4: disable = no new sessions (Better Auth session-create hook) AND all
+	 * existing sessions revoked; re-enable restores sign-in. Audited.
+	 */
+	async setUserDisabled(payload: SetUserDisabledRequest, actorId: string) {
+		const [user] = await db.select().from(users).where(eq(users.id, payload.userId))
+		if (!user) {
+			throw new ORPCError("NOT_FOUND", { message: `User ${payload.userId} not found` })
+		}
+		if (user.id === actorId) {
+			throw new ORPCError("BAD_REQUEST", { message: "You cannot disable your own account" })
+		}
+
+		await db.transaction(async tx => {
+			await tx
+				.update(users)
+				.set({ disabled: payload.disabled, updatedAt: new Date() })
+				.where(eq(users.id, payload.userId))
+			if (payload.disabled) {
+				// Revoke every live session so the lockout is immediate.
+				await tx.delete(sessions).where(eq(sessions.userId, payload.userId))
+			}
+		})
+
+		await this.auditService.writeAudit({
+			actorId,
+			actorType: "user",
+			action: payload.disabled ? "users.accounts.disable" : "users.accounts.enable",
+			resourceType: "user",
+			resourceId: payload.userId,
+			before: { disabled: user.disabled },
+			after: { disabled: payload.disabled },
+		})
+
+		return { id: payload.userId, disabled: payload.disabled }
+	}
+
+	/** Better Auth-compatible scrypt hash (same params as packages/db seed). */
+	private hashPassword(password: string): string {
+		const saltHex = randomBytes(16).toString("hex")
+		const key = scryptSync(password.normalize("NFKC"), saltHex, 64, {
+			N: 16384,
+			r: 16,
+			p: 1,
+			maxmem: 128 * 16384 * 16 * 2,
+		})
+		return `${saltHex}:${key.toString("hex")}`
 	}
 
 	async assignUserRole(payload: AssignRoleRequest, actorId: string) {

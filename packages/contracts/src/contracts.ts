@@ -46,6 +46,9 @@ export type {
 	UserWithRoles,
 	AssignRoleRequest,
 	RemoveRoleRequest,
+	CreateUserRequest,
+	CreateUserResponse,
+	SetUserDisabledRequest,
 } from "./modules/v1/rbac/rbac.schema.js"
 
 // Corpus (ingestion) contract + schemas
