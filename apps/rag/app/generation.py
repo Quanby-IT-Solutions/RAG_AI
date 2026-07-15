@@ -38,7 +38,7 @@ from app.providers import (
     build_model_router,
 )
 from app.reliability import CircuitBreaker, ReliabilityRouter, validate_output
-from app.retrieval import RetrievalService, get_retrieval_service
+from app.retrieval import RetrievalFilters, RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
 from app.tracing import traced
 
@@ -209,11 +209,13 @@ class GenerationService:
             routed = await routed
         return routed
 
-    async def _prepare(self, *, query: str, k: int | None) -> dict[str, Any]:
+    async def _prepare(
+        self, *, query: str, k: int | None, filters: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Shared Flow B steps 3-5 for both response modes: hybrid retrieve
         (RT-1/RT-2), hard token budget (GN-2, rank-then-select), grounded
         prompt assembly. Returns everything the generate stage needs."""
-        chunks = await self._retrieval.retrieve(query, k=k)
+        chunks = await self._retrieval.retrieve(query, k=k, filters=filters)
         retrieved_record = [
             {
                 "id": chunk["id"],
@@ -270,12 +272,13 @@ class GenerationService:
         k: int | None,
         principal: ServicePrincipal,
         conversation_id: str | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         trace_id = principal.trace_id or str(uuid.uuid4())
         await self._assert_conversation_access(conversation_id, principal)
 
-        prep = await self._prepare(query=query, k=k)
+        prep = await self._prepare(query=query, k=k, filters=filters)
         chunks = prep["chunks"]
         retrieved_record = prep["retrieved_record"]
         used_chunks = prep["used_chunks"]
@@ -388,6 +391,7 @@ class GenerationService:
         k: int | None,
         principal: ServicePrincipal,
         conversation_id: str | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> Any:
         """SSE mode (GN-3): yields `token` events as the provider streams,
         then ONE `final` event carrying citations, usage, ids, TTFT and
@@ -400,7 +404,7 @@ class GenerationService:
         trace_id = principal.trace_id or str(uuid.uuid4())
         await self._assert_conversation_access(conversation_id, principal)
 
-        prep = await self._prepare(query=query, k=k)
+        prep = await self._prepare(query=query, k=k, filters=filters)
         used_chunks = prep["used_chunks"]
 
         # Flow B route stage (GN-4/GN-5): decision recorded before generation.
@@ -555,6 +559,8 @@ class ChatRequest(BaseModel):
     k: int | None = Field(default=None, ge=1, le=50)
     # CH-3: continue an existing conversation (must be owned by the caller).
     conversation_id: str | None = Field(default=None, alias="conversationId")
+    # RT-4: restrict retrieval to a corpus subset (never an unfiltered fallback).
+    filters: RetrievalFilters | None = Field(default=None)
 
     model_config = {"populate_by_name": True}
 
@@ -581,6 +587,7 @@ async def chat(
             k=payload.k,
             principal=principal,
             conversation_id=payload.conversation_id,
+            filters=payload.filters.to_query_filters() if payload.filters else None,
         )
     except ConversationAccessError as exc:
         from fastapi import HTTPException
@@ -632,6 +639,7 @@ async def chat_stream(
             k=payload.k,
             principal=principal,
             conversation_id=payload.conversation_id,
+            filters=payload.filters.to_query_filters() if payload.filters else None,
         ),
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "x-accel-buffering": "no"},

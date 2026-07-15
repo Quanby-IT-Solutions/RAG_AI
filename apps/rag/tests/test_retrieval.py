@@ -53,16 +53,20 @@ class FakeChunksRepository:
         self.concurrency_probe: dict[str, Any] | None = None
 
     async def search_similar(
-        self, *, embedding: list[float], k: int, ef_search: int
+        self, *, embedding: list[float], k: int, ef_search: int, filters=None
     ) -> list[dict[str, Any]]:
-        self.calls.append({"embedding": embedding, "k": k, "ef_search": ef_search})
+        self.calls.append(
+            {"embedding": embedding, "k": k, "ef_search": ef_search, "filters": filters}
+        )
         if self.concurrency_probe is not None:
             self.concurrency_probe["vector_started"].set()
             await self.concurrency_probe["keyword_started"].wait()
         return [dict(row) for row in self.rows[:k]]
 
-    async def search_keyword(self, *, query: str, k: int) -> list[dict[str, Any]]:
-        self.keyword_calls.append({"query": query, "k": k})
+    async def search_keyword(
+        self, *, query: str, k: int, filters=None
+    ) -> list[dict[str, Any]]:
+        self.keyword_calls.append({"query": query, "k": k, "filters": filters})
         if self.concurrency_probe is not None:
             self.concurrency_probe["keyword_started"].set()
             await self.concurrency_probe["vector_started"].wait()
@@ -404,8 +408,8 @@ def retrieve_app(settings):
         def __init__(self):
             self.calls = []
 
-        async def retrieve(self, query, *, k=None):
-            self.calls.append({"query": query, "k": k})
+        async def retrieve(self, query, *, k=None, filters=None):
+            self.calls.append({"query": query, "k": k, "filters": filters})
             return [
                 {
                     "id": "c1",
@@ -458,7 +462,7 @@ async def test_retrieve_endpoint_returns_chunks_with_content_hash(retrieve_app):
         "content": "Vacation is 20 days.",
         "score": 0.03,
     }
-    assert fake.calls == [{"query": "vacation", "k": 5}]
+    assert fake.calls == [{"query": "vacation", "k": 5, "filters": None}]
 
 
 # ------------------------------------------------------- RT-3 rerank stage
@@ -532,3 +536,106 @@ async def test_no_reranker_configured_keeps_fused_order(settings):
     chunks = await service.retrieve("query", k=2)
 
     assert [c["id"] for c in chunks] == [rows[0]["id"], rows[1]["id"]]
+
+
+# ------------------------------------------------------- RT-4 metadata filters
+def test_build_metadata_filter_emits_predicates_for_every_supported_key():
+    from app.chunks import build_metadata_filter
+
+    clause, params = build_metadata_filter(
+        {
+            "docTypes": ["pdf", "html"],
+            "source": "handbook",
+            "dateFrom": "2026-01-01T00:00:00Z",
+            "dateTo": "2026-12-31T00:00:00Z",
+            "section": "rows 1-50",
+        },
+        start_index=3,
+    )
+
+    assert "d.doc_type = ANY($3::text[])" in clause
+    assert "d.source_uri ILIKE $4" in clause
+    assert "d.ingested_at >= $5::timestamptz" in clause
+    assert "d.ingested_at <= $6::timestamptz" in clause
+    assert "chunks.metadata->>'section' ILIKE $7" in clause
+    assert params == [
+        ["pdf", "html"],
+        "%handbook%",
+        "2026-01-01T00:00:00Z",
+        "2026-12-31T00:00:00Z",
+        "%rows 1-50%",
+    ]
+
+
+def test_build_metadata_filter_empty_returns_no_clause():
+    from app.chunks import build_metadata_filter
+
+    assert build_metadata_filter(None, start_index=3) == ("", [])
+    assert build_metadata_filter({}, start_index=3) == ("", [])
+    assert build_metadata_filter({"source": ""}, start_index=3) == ("", [])
+
+
+def test_filtered_sql_joins_documents_in_both_arms():
+    from app.chunks import _keyword_sql, _vector_sql, build_metadata_filter
+
+    clause, _ = build_metadata_filter({"docTypes": ["csv"]}, start_index=3)
+    vector = _vector_sql(clause)
+    keyword = _keyword_sql(clause)
+
+    for sql in (vector, keyword):
+        assert "JOIN documents d ON d.id = chunks.document_id" in sql
+        assert "d.doc_type = ANY($3::text[])" in sql
+    # Unfiltered SQL has no join at all (identical to the RT-2 base path).
+    assert "JOIN" not in _vector_sql("")
+    assert "JOIN" not in _keyword_sql("")
+
+
+async def test_filters_reach_both_arms_pre_fusion(settings):
+    rows = [make_chunk_row(0.9, 0)]
+    service, _, repository = make_service(settings, rows=rows, keyword_rows=rows)
+    filters = {"docTypes": ["pdf"], "source": "manual"}
+
+    await service.retrieve("query", filters=filters)
+
+    assert repository.calls[0]["filters"] == filters
+    assert repository.keyword_calls[0]["filters"] == filters
+
+
+async def test_filter_matching_nothing_returns_empty_not_unfiltered(settings):
+    # Repository honoring the filter returns no rows -> retrieve() yields [].
+    service, _, _ = make_service(settings, rows=[], keyword_rows=[])
+
+    chunks = await service.retrieve("query", filters={"docTypes": ["pdf"]})
+
+    assert chunks == []
+
+
+async def test_repository_applies_filter_params_in_vector_arm(settings, monkeypatch):
+    row = {**make_chunk_row(0.9), "metadata": json.dumps({"page": 0})}
+    connection = RecordingConnection(rows=[row])
+    patch_connect(monkeypatch, connection)
+
+    await ChunksRepository(settings).search_similar(
+        embedding=[0.1, 0.2],
+        k=5,
+        ef_search=40,
+        filters={"docTypes": ["pdf"], "section": "intro"},
+    )
+
+    fetch = next(e for e in connection.events if e[0] == "fetch")
+    assert "JOIN documents d ON d.id = chunks.document_id" in fetch[1]
+    assert "d.doc_type = ANY($3::text[])" in fetch[1]
+    assert "chunks.metadata->>'section' ILIKE $4" in fetch[1]
+    assert fetch[2] == ("[0.1,0.2]", 5, ["pdf"], "%intro%")
+
+
+async def test_filters_are_recorded_in_the_retrieval_trace(settings, caplog):
+    rows = [make_chunk_row(0.9, 0)]
+    service, _, _ = make_service(settings, rows=rows, keyword_rows=rows)
+
+    with caplog.at_level(logging.INFO, logger="app.retrieval"):
+        await service.retrieve("query", filters={"docTypes": ["csv"]})
+
+    record = next(m for m in caplog.messages if "retrieval.retrieved_chunks" in m)
+    payload = json.loads(record.split("retrieval.retrieved_chunks ")[1])
+    assert payload["filters"] == {"docTypes": ["csv"]}

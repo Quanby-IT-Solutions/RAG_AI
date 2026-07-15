@@ -84,6 +84,7 @@ class RetrievalService:
         vector_weight: float | None = None,
         keyword_weight: float | None = None,
         rerank: bool | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Return the top-k chunks (id, document_id, content, metadata,
         chunk_index, similarity, rrf_score[, rerank_score]) for the query,
@@ -92,8 +93,10 @@ class RetrievalService:
         k / weights / rerank: per-request overrides; defaults come from
         Settings (rerank=None honors the configured reranker; False forces
         fused order for A/B comparison; True requires a configured reranker).
-        Empty corpus (or no matches in either arm) -> [] cleanly (GN-1
-        answers "I don't know")."""
+        filters (RT-4): metadata predicates applied PRE-FUSION in both arms
+        (docTypes/source/dateFrom/dateTo/section); a filter matching nothing
+        returns [] — never an unfiltered fallback. Empty corpus (or no
+        matches in either arm) -> [] cleanly (GN-1 answers "I don't know")."""
         top_k = self._settings.retrieval_top_k if k is None else k
         if top_k < 1:
             raise ValueError(f"k must be >= 1; got {k}")
@@ -116,12 +119,13 @@ class RetrievalService:
                 embedding=vectors[0],
                 k=pool,
                 ef_search=self._settings.hnsw_ef_search,
+                filters=filters,
             )
 
         async def keyword_arm() -> list[dict[str, Any]]:
             if w_keyword == 0:
                 return []
-            return await self._repository.search_keyword(query=query, k=pool)
+            return await self._repository.search_keyword(query=query, k=pool, filters=filters)
 
         # RT-2 AC: both searches execute concurrently.
         vector_chunks, keyword_chunks = await asyncio.gather(vector_arm(), keyword_arm())
@@ -158,6 +162,9 @@ class RetrievalService:
                     "ef_search": self._settings.hnsw_ef_search,
                     "weights": {"vector": w_vector, "keyword": w_keyword},
                     "rrf_k": self._settings.rrf_k,
+                    # RT-4: the trace records exactly which corpus subset was
+                    # eligible for this request.
+                    "filters": filters or None,
                     "rerank": {
                         "requested": use_rerank,
                         "applied": reranked,
@@ -210,9 +217,33 @@ def get_retrieval_service(request: Request) -> RetrievalService:
 router = APIRouter(prefix="/internal", dependencies=[Depends(verify_service_jwt)])
 
 
+class RetrievalFilters(BaseModel):
+    """RT-4 metadata filters — restrict retrieval to a corpus subset."""
+
+    doc_types: list[str] | None = Field(default=None, alias="docTypes")
+    source: str | None = Field(default=None, max_length=500)
+    date_from: str | None = Field(default=None, alias="dateFrom")
+    date_to: str | None = Field(default=None, alias="dateTo")
+    section: str | None = Field(default=None, max_length=200)
+
+    model_config = {"populate_by_name": True}
+
+    def to_query_filters(self) -> dict[str, Any] | None:
+        payload = {
+            "docTypes": self.doc_types,
+            "source": self.source,
+            "dateFrom": self.date_from,
+            "dateTo": self.date_to,
+            "section": self.section,
+        }
+        cleaned = {key: value for key, value in payload.items() if value}
+        return cleaned or None
+
+
 class RetrieveRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     k: int | None = Field(default=None, ge=1, le=50)
+    filters: RetrievalFilters | None = Field(default=None)
 
 
 @router.post("/retrieve")
@@ -224,7 +255,11 @@ async def retrieve_endpoint(
 
     Returns the fused top-k chunks including each chunk's content_hash — the
     stable binding key golden items store."""
-    chunks = await retrieval.retrieve(payload.query, k=payload.k)
+    chunks = await retrieval.retrieve(
+        payload.query,
+        k=payload.k,
+        filters=payload.filters.to_query_filters() if payload.filters else None,
+    )
     return {
         "chunks": [
             {

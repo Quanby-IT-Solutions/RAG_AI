@@ -45,6 +45,9 @@ export function ChatView({
 	const [isStreaming, setIsStreaming] = useState(false)
 	// CH-3: once a conversation exists, later sends continue it server-side.
 	const [conversationId, setConversationId] = useState<string | null>(initialConversationId)
+	// RT-4: restrict retrieval to a corpus subset; empty = whole corpus.
+	const [filterDocTypes, setFilterDocTypes] = useState<("pdf" | "html" | "docx" | "csv")[]>([])
+	const [filterSource, setFilterSource] = useState("")
 	const seededRef = useRef(false)
 	const { data: existingConversation } = useConversationQuery(initialConversationId)
 	const [requestError, setRequestError] = useState<Error | null>(null)
@@ -152,8 +155,15 @@ export function ChatView({
 		}
 
 		try {
+			const filters =
+				filterDocTypes.length > 0 || filterSource.trim()
+					? {
+							...(filterDocTypes.length > 0 && { docTypes: filterDocTypes }),
+							...(filterSource.trim() && { source: filterSource.trim() }),
+						}
+					: undefined
 			await streamChatQuery(
-				{ query, conversationId: conversationId ?? undefined },
+				{ query, conversationId: conversationId ?? undefined, filters },
 				{
 					onToken: delta => {
 						ensureBubble()
@@ -294,6 +304,42 @@ export function ChatView({
 				{rateLimit.isRateLimit ? (
 					<RateLimitBanner message={rateLimit.message} secondsLeft={secondsLeft} />
 				) : null}
+
+				{/* RT-4: corpus-subset filters, applied in SQL server-side. */}
+				<fieldset
+					className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs"
+					aria-label="Retrieval filters"
+				>
+					<legend className="sr-only">Retrieval filters</legend>
+					<span className="font-medium">Filter:</span>
+					{(["pdf", "html", "docx", "csv"] as const).map(type => (
+						<label key={type} className="flex items-center gap-1">
+							<input
+								type="checkbox"
+								checked={filterDocTypes.includes(type)}
+								onChange={event =>
+									setFilterDocTypes(previous =>
+										event.target.checked
+											? [...previous, type]
+											: previous.filter(t => t !== type)
+									)
+								}
+							/>
+							{type.toUpperCase()}
+						</label>
+					))}
+					<input
+						type="text"
+						aria-label="Source filter"
+						placeholder="source contains…"
+						className="border-input bg-background h-7 rounded-md border px-2"
+						value={filterSource}
+						onChange={event => setFilterSource(event.target.value)}
+					/>
+					{filterDocTypes.length > 0 || filterSource.trim() ? (
+						<span role="status">answers limited to matching documents</span>
+					) : null}
+				</fieldset>
 
 				<ChatComposer
 					value={input}

@@ -28,12 +28,27 @@ export const ChatTokenUsageSchema = z
 	})
 	.catchall(z.unknown())
 
+/** RT-4: restrict retrieval to a corpus subset (applied in SQL, both arms). */
+export const RetrievalFiltersSchema = z.object({
+	docTypes: z.array(z.enum(["pdf", "html", "docx", "csv"])).min(1).optional(),
+	/** Case-insensitive substring of the document source URI. */
+	source: z.string().trim().min(1).max(500).optional(),
+	/** documents.ingested_at range (ISO timestamps). */
+	dateFrom: z.string().datetime({ offset: true }).optional(),
+	dateTo: z.string().datetime({ offset: true }).optional(),
+	/** Case-insensitive substring of the chunk section label. */
+	section: z.string().trim().min(1).max(200).optional(),
+})
+
 export const ChatQueryInputSchema = z.object({
 	query: z.string().trim().min(1).max(4000),
 	// Per-request top-k override; the RAG service default (RETRIEVAL_TOP_K) applies when omitted.
 	k: z.number().int().min(1).max(50).optional(),
 	// CH-3: continue an existing conversation the caller owns; omitted -> new.
 	conversationId: z.string().uuid().optional(),
+	// RT-4: metadata filter — a filter matching nothing yields a grounded
+	// "I don't know", never an unfiltered fallback.
+	filters: RetrievalFiltersSchema.optional(),
 })
 
 /**
@@ -92,6 +107,7 @@ export const ConversationDetailSchema = z.object({
 
 export type ChatCitation = z.infer<typeof ChatCitationSchema>
 export type ChatTokenUsage = z.infer<typeof ChatTokenUsageSchema>
+export type RetrievalFilters = z.infer<typeof RetrievalFiltersSchema>
 export type ChatQueryInput = z.infer<typeof ChatQueryInputSchema>
 export type ChatAnswer = z.infer<typeof ChatAnswerSchema>
 export type ConversationSummary = z.infer<typeof ConversationSummarySchema>

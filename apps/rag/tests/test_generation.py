@@ -67,8 +67,10 @@ class FakeRetrievalService:
         self.chunks = chunks or []
         self.calls: list[dict[str, Any]] = []
 
-    async def retrieve(self, query: str, *, k: int | None = None) -> list[dict[str, Any]]:
-        self.calls.append({"query": query, "k": k})
+    async def retrieve(
+        self, query: str, *, k: int | None = None, filters: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        self.calls.append({"query": query, "k": k, "filters": filters})
         return [dict(chunk) for chunk in self.chunks]
 
 
@@ -274,7 +276,7 @@ async def test_k_override_is_forwarded_to_retrieval(settings):
 
     await service.answer(query="q", k=3, principal=PRINCIPAL)
 
-    assert retrieval.calls == [{"query": "q", "k": 3}]
+    assert retrieval.calls == [{"query": "q", "k": 3, "filters": None}]
 
 
 # ------------------------------------------ B2: provider error -> degradation

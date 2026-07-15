@@ -96,6 +96,9 @@ export type {
 } from "./modules/v1/chat/chat.schema.js"
 
 // API keys (security, SC-3) contract + schemas
+export { RetrievalFiltersSchema } from "./modules/v1/chat/chat.schema.js"
+export type { RetrievalFilters } from "./modules/v1/chat/chat.schema.js"
+
 export { apiKeysContract } from "./modules/v1/apikeys/apikeys.contract.js"
 export {
 	ApiKeySchema,

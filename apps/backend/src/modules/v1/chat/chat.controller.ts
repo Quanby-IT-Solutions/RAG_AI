@@ -50,6 +50,7 @@ export class ChatController {
 					query: input.query,
 					k: input.k,
 					conversationId: input.conversationId,
+					filters: input.filters,
 					userId: session.user.id,
 					permissions: access.permissions,
 					requestId: correlationId,

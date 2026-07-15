@@ -57,6 +57,8 @@ export interface ChatForwardInput {
 	k?: number
 	/** CH-3: continue an existing conversation the caller owns. */
 	conversationId?: string
+	/** RT-4: metadata filter forwarded verbatim to the RAG service. */
+	filters?: Record<string, unknown>
 	userId: string
 	permissions: readonly string[]
 	requestId: string
@@ -151,6 +153,7 @@ export class RagGatewayService {
 				query: input.query,
 				...(input.k !== undefined && { k: input.k }),
 				...(input.conversationId !== undefined && { conversationId: input.conversationId }),
+				...(input.filters !== undefined && { filters: input.filters }),
 			}),
 			failureMessage: "RAG chat failed",
 		})

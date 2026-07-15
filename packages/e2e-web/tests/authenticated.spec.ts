@@ -273,7 +273,7 @@ test.describe("ingestion jobs console (IN-7)", () => {
 test.describe("chat streaming (GN-3/CH-2)", () => {
 	test("streams a cited answer progressively in the browser", async ({ page }) => {
 		await page.goto("/chat")
-		const input = page.getByRole("textbox")
+		const input = page.getByRole("textbox", { name: "Question" })
 		await expect(input).toBeVisible()
 
 		await input.fill("How many vacation days do employees receive per year?")
@@ -435,5 +435,22 @@ test.describe("retrieval eval runs console (EV-2)", () => {
 		}
 		await expect(page.getByTestId("run-comparison")).toBeVisible({ timeout: 30_000 })
 		await expect(page.getByTestId("run-comparison").getByText(/hitRate/)).toBeVisible()
+	})
+})
+
+test.describe("chat retrieval filters (RT-4)", () => {
+	test("a filter matching nothing yields a grounded I-don't-know", async ({ page }) => {
+		await page.goto("/chat")
+		const composer = page.getByPlaceholder(/ask/i)
+		await expect(composer).toBeVisible({ timeout: 15_000 })
+
+		// Restrict to a source that doesn't exist -> retrieval returns empty.
+		await page.getByLabel("Source filter").fill("no-such-source-e2e")
+		await expect(page.getByText("answers limited to matching documents")).toBeVisible()
+
+		await composer.fill("What is the meal reimbursement limit?")
+		await composer.press("Enter")
+
+		await expect(page.getByText(/I don't know/).first()).toBeVisible({ timeout: 60_000 })
 	})
 })
