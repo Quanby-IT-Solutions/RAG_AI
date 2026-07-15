@@ -27,6 +27,19 @@ ORDER BY embedding <=> $1::vector
 LIMIT $2
 """
 
+# Keyword arm (RT-2): full-text search over the DB-generated `tsv` column
+# (GIN-indexed, IN-2). websearch_to_tsquery parses free-form user queries
+# safely (quoted phrases, OR, -exclusions) and never raises on odd input.
+# Fully DB-resident — no in-memory index to lose on replica restart.
+_KEYWORD_SQL = """
+SELECT id, document_id, content, metadata, chunk_index,
+       ts_rank_cd(tsv, websearch_to_tsquery('english', $1)) AS rank
+FROM chunks
+WHERE tsv @@ websearch_to_tsquery('english', $1)
+ORDER BY rank DESC
+LIMIT $2
+"""
+
 
 def _row_to_chunk(row: Any) -> dict[str, Any]:
     metadata = row["metadata"]
@@ -84,3 +97,22 @@ class ChunksRepository:
         finally:
             await conn.close()
         return [_row_to_chunk(row) for row in rows]
+
+    async def search_keyword(self, *, query: str, k: int) -> list[dict[str, Any]]:
+        """Full-text top-k over `tsv` (RT-2 keyword arm). Chunks matching no
+        term return [] cleanly; `rank` maps onto the shared `similarity` key
+        so both arms produce the same row shape."""
+        conn = await self._connect()
+        try:
+            rows = await with_hard_timeout(
+                conn.fetch(_KEYWORD_SQL, query, k),
+                seconds=self._settings.db_timeout_seconds,
+                operation="chunks.search_keyword",
+            )
+        finally:
+            await conn.close()
+        results = []
+        for row in rows:
+            chunk = _row_to_chunk({**dict(row), "similarity": row["rank"]})
+            results.append(chunk)
+        return results

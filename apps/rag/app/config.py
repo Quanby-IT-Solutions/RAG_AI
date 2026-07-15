@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     # pgvector HNSW search breadth, applied per query via SET LOCAL hnsw.ef_search.
     hnsw_ef_search: int = Field(alias="HNSW_EF_SEARCH", default=40, ge=1)
 
+    # --- Hybrid search (RT-2) — parallel vector + keyword arms fused by RRF.
+    # Weights default 50/50 (PRD decision); candidates per arm feed the fusion
+    # (and later RT-3 rerank window).
+    retrieval_vector_weight: float = Field(alias="RETRIEVAL_VECTOR_WEIGHT", default=0.5, ge=0)
+    retrieval_keyword_weight: float = Field(alias="RETRIEVAL_KEYWORD_WEIGHT", default=0.5, ge=0)
+    retrieval_candidate_pool: int = Field(alias="RETRIEVAL_CANDIDATE_POOL", default=20, ge=1)
+    # Reciprocal Rank Fusion constant: score = w / (RRF_K + rank).
+    rrf_k: int = Field(alias="RRF_K", default=60, ge=1)
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)
@@ -92,6 +101,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"EMBEDDING_DIMENSIONS must be {PINNED_EMBEDDING_DIMENSIONS} "
                 f"(pinned, D1); got {self.embedding_dimensions}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_some_fusion_weight(self) -> Self:
+        if self.retrieval_vector_weight == 0 and self.retrieval_keyword_weight == 0:
+            raise ValueError(
+                "RETRIEVAL_VECTOR_WEIGHT and RETRIEVAL_KEYWORD_WEIGHT cannot both be 0"
             )
         return self
 
