@@ -41,6 +41,7 @@ from app.providers import (
 from app.reliability import CircuitBreaker, ReliabilityRouter, validate_output
 from app.retrieval import RetrievalFilters, RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
+from app.security_screen import QueryBlockedError, screen_query
 from app.tracing import traced
 
 # Backward-compat alias: the GN-1 ChatClient moved to app.providers (GN-4).
@@ -180,6 +181,26 @@ class GenerationService:
             )
         return citations
 
+    async def screen(self, query: str, principal: ServicePrincipal, trace_id: str) -> str:
+        """SC-1, Flow B stage 1 (position contractual): sanitize + injection
+        check + PII mask BEFORE cache/retrieval/prompt/persistence/logs.
+        Blocked queries are audited then raised; otherwise the MASKED query
+        is the only form allowed downstream."""
+        result = screen_query(query, self._settings)
+        if result.blocked:
+            assert result.injection is not None
+            await self._repository.write_audit(
+                actor_id=principal.sub,
+                actor_type=principal.actor_type,
+                action="chat.query.blocked",
+                resource_type="query",
+                resource_id=trace_id,
+                before=None,
+                after={"injection": result.injection, "action": "block"},
+            )
+            raise QueryBlockedError(result.injection)
+        return result.query
+
     async def _assert_conversation_access(
         self, conversation_id: str | None, principal: ServicePrincipal
     ) -> None:
@@ -301,6 +322,8 @@ class GenerationService:
     ) -> dict[str, Any]:
         started = time.perf_counter()
         trace_id = principal.trace_id or str(uuid.uuid4())
+        # SC-1 stage 1 runs before EVERYTHING (cache/retrieval/persistence).
+        query = await self.screen(query, principal, trace_id)
         await self._assert_conversation_access(conversation_id, principal)
 
         prep = await self._prepare(query=query, k=k, filters=filters)
@@ -427,6 +450,8 @@ class GenerationService:
         degraded=true (never a silent hang)."""
         started = time.perf_counter()
         trace_id = principal.trace_id or str(uuid.uuid4())
+        # SC-1 stage 1 runs before EVERYTHING (cache/retrieval/persistence).
+        query = await self.screen(query, principal, trace_id)
         await self._assert_conversation_access(conversation_id, principal)
 
         prep = await self._prepare(query=query, k=k, filters=filters)
@@ -631,6 +656,10 @@ async def chat(
             conversation_id=payload.conversation_id,
             filters=payload.filters.to_query_filters() if payload.filters else None,
         )
+    except QueryBlockedError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ConversationAccessError as exc:
         from fastapi import HTTPException
 
@@ -660,11 +689,19 @@ async def chat_stream(
         retrieval=retrieval,
         chat_client=chat_client,
         repository=repository,
+        compressor=get_compressor(request),
     )
-    # Ownership is checked BEFORE the stream starts so a denial is a clean
-    # 403/404 response, not a broken SSE stream.
+    # Screening (SC-1) and ownership are checked BEFORE the stream starts so
+    # a refusal is a clean 400/403/404 response, not a broken SSE stream.
     try:
+        screened_query = await service.screen(
+            payload.query, principal, principal.trace_id or str(uuid.uuid4())
+        )
         await service._assert_conversation_access(payload.conversation_id, principal)
+    except QueryBlockedError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ConversationAccessError as exc:
         from fastapi import HTTPException
 
@@ -677,7 +714,7 @@ async def chat_stream(
 
     return StreamingResponse(
         service.answer_stream(
-            query=payload.query,
+            query=screened_query,
             k=payload.k,
             principal=principal,
             conversation_id=payload.conversation_id,

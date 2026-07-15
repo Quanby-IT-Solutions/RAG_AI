@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     # (baseline-relative, PRD Annex A#13 — not absolute thresholds).
     eval_gate_tolerance: float = Field(alias="EVAL_GATE_TOLERANCE", default=0.02, ge=0, le=1)
 
+    # --- Security screening (SC-1, Flow B stage 1) — position contractual:
+    # sanitize + injection check + PII mask run BEFORE cache/retrieval/logs.
+    security_screen_enabled: bool = Field(alias="SECURITY_SCREEN_ENABLED", default=True)
+    injection_action: Literal["block", "neutralize"] = Field(
+        alias="INJECTION_ACTION", default="block"
+    )
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)
