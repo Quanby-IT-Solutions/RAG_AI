@@ -67,6 +67,8 @@ export const ChatAnswerSchema = z.object({
 	tokenUsage: ChatTokenUsageSchema.nullable(),
 	isIDontKnow: z.boolean(),
 	degraded: z.boolean(),
+	/** CP-1: answer served from the response cache (no LLM call). */
+	cached: z.boolean().optional(),
 })
 
 // ── Conversation history (CH-3) ─────────────────────────────────────────────

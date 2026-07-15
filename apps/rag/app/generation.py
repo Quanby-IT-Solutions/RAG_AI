@@ -40,6 +40,7 @@ from app.providers import (
 )
 from app.rate_limit import rate_limit
 from app.reliability import CircuitBreaker, ReliabilityRouter, validate_output
+from app.response_cache import ResponseCache, build_response_cache
 from app.retrieval import RetrievalFilters, RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
 from app.security_screen import QueryBlockedError, screen_query
@@ -142,6 +143,7 @@ class GenerationService:
         chat_client: "ModelRouter | SingleClientRouter | ChatModelClient",
         repository: ConversationsRepository,
         compressor: "Compressor | None" = None,
+        response_cache: "ResponseCache | None" = None,
     ) -> None:
         self._settings = settings
         self._retrieval = retrieval
@@ -153,6 +155,8 @@ class GenerationService:
         self._repository = repository
         # RT-7: post-retrieval contextual compression (None when off).
         self._compressor = compressor
+        # CP-1: Redis response/semantic cache (None when off / unit tests).
+        self._response_cache = response_cache
 
     async def _build_citations(
         self, answer: str, chunks: list[dict[str, Any]]
@@ -181,6 +185,70 @@ class GenerationService:
                 }
             )
         return citations
+
+    async def _serve_cached(
+        self,
+        *,
+        cached: dict[str, Any],
+        query: str,
+        principal: ServicePrincipal,
+        conversation_id: str | None,
+        trace_id: str,
+        started: float,
+    ) -> dict[str, Any]:
+        """CP-1 hit path: the cached grounded answer returns WITHOUT any
+        retrieval or LLM call; the turn is still persisted (the user asked)
+        and the request is audited + traced with cache_hit."""
+        logger.info(
+            "chat.cache %s",
+            json.dumps(
+                {
+                    "cache_hit": True,
+                    "layer": cached.get("cacheLayer"),
+                    "similarity": cached.get("cacheSimilarity"),
+                }
+            ),
+        )
+        conversation_id, message_id = await self._repository.persist_turn(
+            user_id=principal.sub,
+            query=query,
+            answer=cached["answer"],
+            citations=cached.get("citations", []),
+            retrieved_chunks=[],
+            used_chunks=[],
+            token_usage=None,
+            trace_id=trace_id,
+            model_used=cached.get("model", "cache"),
+            conversation_id=conversation_id,
+        )
+        await self._repository.write_audit(
+            actor_id=principal.sub,
+            actor_type=principal.actor_type,
+            action=AUDIT_ACTION_CHAT,
+            resource_type="conversation",
+            resource_id=conversation_id,
+            before=None,
+            after={
+                "messageId": message_id,
+                "model": cached.get("model", "cache"),
+                "cacheHit": True,
+                "cacheLayer": cached.get("cacheLayer"),
+                "traceId": trace_id,
+            },
+        )
+        return {
+            "answer": cached["answer"],
+            "citations": cached.get("citations", []),
+            "conversationId": conversation_id,
+            "messageId": message_id,
+            "traceId": trace_id,
+            "model": cached.get("model", "cache"),
+            "tokenUsage": None,
+            "isIDontKnow": False,
+            "degraded": False,
+            "cached": True,
+            "latencyMs": round((time.perf_counter() - started) * 1000, 3),
+        }
 
     async def screen(self, query: str, principal: ServicePrincipal, trace_id: str) -> str:
         """SC-1, Flow B stage 1 (position contractual): sanitize + injection
@@ -327,6 +395,19 @@ class GenerationService:
         query = await self.screen(query, principal, trace_id)
         await self._assert_conversation_access(conversation_id, principal)
 
+        # ── CP-1 cache stage (AFTER SC-1, BEFORE retrieval/LLM — contractual).
+        if self._response_cache is not None:
+            cached = await self._response_cache.lookup(query=query, filters=filters)
+            if cached is not None:
+                return await self._serve_cached(
+                    cached=cached,
+                    query=query,
+                    principal=principal,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    started=started,
+                )
+
         prep = await self._prepare(query=query, k=k, filters=filters)
         chunks = prep["chunks"]
         retrieved_record = prep["retrieved_record"]
@@ -418,9 +499,7 @@ class GenerationService:
             },
         )
 
-        # The traced return value lands on the rag.chat span — the one trace
-        # per request records model, tokens, and latency (Tech Plan §8).
-        return {
+        payload = {
             "answer": answer_text,
             "citations": citations,
             "conversationId": conversation_id,
@@ -430,8 +509,17 @@ class GenerationService:
             "tokenUsage": token_usage,
             "isIDontKnow": is_i_dont_know,
             "degraded": degraded,
+            "cached": False,
             "latencyMs": latency_ms,
         }
+        # CP-1: successful grounded answers become cache entries (the cache
+        # itself refuses I-don't-know/degraded payloads).
+        if self._response_cache is not None:
+            await self._response_cache.store(query=query, filters=filters, payload=payload)
+
+        # The traced return value lands on the rag.chat span — the one trace
+        # per request records model, tokens, and latency (Tech Plan §8).
+        return payload
 
     async def answer_stream(
         self,
@@ -454,6 +542,25 @@ class GenerationService:
         # SC-1 stage 1 runs before EVERYTHING (cache/retrieval/persistence).
         query = await self.screen(query, principal, trace_id)
         await self._assert_conversation_access(conversation_id, principal)
+
+        # ── CP-1 cache stage: a hit replays as one token event + final.
+        if self._response_cache is not None:
+            cached = await self._response_cache.lookup(query=query, filters=filters)
+            if cached is not None:
+                payload = await self._serve_cached(
+                    cached=cached,
+                    query=query,
+                    principal=principal,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    started=started,
+                )
+                yield _sse("token", {"delta": payload["answer"]})
+                yield _sse(
+                    "final",
+                    {**payload, "ttftMs": payload["latencyMs"]},
+                )
+                return
 
         prep = await self._prepare(query=query, k=k, filters=filters)
         used_chunks = prep["used_chunks"]
@@ -616,6 +723,17 @@ class ChatRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+def get_response_cache(request: Request) -> "ResponseCache | None":
+    """CP-1 seam: shared per-app cache (None when CACHE_ENABLED is off).
+    Reuses the pinned per-app EmbeddingsClient for the semantic layer."""
+    settings = request.app.state.settings
+    if not settings.cache_enabled:
+        return None
+    from app.ingest import get_embeddings_client
+
+    return build_response_cache(settings, get_embeddings_client(request))
+
+
 def get_compressor(request: Request) -> "Compressor | None":
     """RT-7 seam: config-built compressor (None when COMPRESSION_ENABLED off).
     The embeddings filter reuses the pinned per-app EmbeddingsClient; the LLM
@@ -648,6 +766,7 @@ async def chat(
         chat_client=chat_client,
         repository=repository,
         compressor=get_compressor(request),
+        response_cache=get_response_cache(request),
     )
     try:
         return await service.answer(
@@ -691,6 +810,7 @@ async def chat_stream(
         chat_client=chat_client,
         repository=repository,
         compressor=get_compressor(request),
+        response_cache=get_response_cache(request),
     )
     # Screening (SC-1) and ownership are checked BEFORE the stream starts so
     # a refusal is a clean 400/403/404 response, not a broken SSE stream.

@@ -10,6 +10,8 @@ REQUIRED_ENV = {
     "LANGSMITH_API_KEY": "test-langsmith-key",
     # SC-2: unit tests must never touch a real Redis for limit counters.
     "RATE_LIMIT_STORAGE": "memory://",
+    # CP-1: unit tests never touch a real Redis; cache tests inject fakes.
+    "CACHE_ENABLED": "false",
 }
 
 

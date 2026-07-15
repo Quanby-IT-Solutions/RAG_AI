@@ -108,6 +108,15 @@ class Settings(BaseSettings):
     rate_limit_ingest: str = Field(alias="RATE_LIMIT_INGEST", default="10/minute")
     rate_limit_default: str = Field(alias="RATE_LIMIT_DEFAULT", default="120/minute")
 
+    # --- Response/semantic cache (CP-1) — Redis, checked AFTER SC-1 and
+    # BEFORE retrieval/LLM (Flow B order contractual).
+    cache_enabled: bool = Field(alias="CACHE_ENABLED", default=True)
+    cache_ttl_seconds: int = Field(alias="CACHE_TTL_SECONDS", default=3600, ge=1)
+    # Cosine similarity for the semantic layer (query-embedding near-match).
+    cache_semantic_threshold: float = Field(
+        alias="CACHE_SEMANTIC_THRESHOLD", default=0.95, ge=0, le=1
+    )
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)
