@@ -123,6 +123,19 @@ class Settings(BaseSettings):
     # Reciprocal Rank Fusion constant: score = w / (RRF_K + rank).
     rrf_k: int = Field(alias="RRF_K", default=60, ge=1)
 
+    # --- Reranking (RT-3) — cross-encoder over the fused candidate window.
+    # Off by default so eval A/B (rerank on vs off) stays producible and the
+    # base install needs no rerank dependency/key. Provider is swappable per
+    # §XI no-lock-in: "cohere" (hosted) or "local" (sentence-transformers
+    # cross-encoder; requires the optional `rerank` dependency group).
+    rerank_enabled: bool = Field(alias="RERANK_ENABLED", default=False)
+    rerank_provider: Literal["cohere", "local"] = Field(alias="RERANK_PROVIDER", default="cohere")
+    # Top ~20-50 fused candidates are re-scored jointly with the query (§5.2).
+    rerank_window: int = Field(alias="RERANK_WINDOW", default=20, ge=1, le=50)
+    rerank_model: str = Field(alias="RERANK_MODEL", default="rerank-english-v3.0")
+    rerank_timeout_seconds: float = Field(alias="RERANK_TIMEOUT_SECONDS", default=10.0, gt=0)
+    cohere_api_key: str | None = Field(alias="COHERE_API_KEY", default=None)
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)

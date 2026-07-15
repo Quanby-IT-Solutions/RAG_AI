@@ -230,6 +230,7 @@ class SupportsRetrieve(Protocol):
         k: int | None = None,
         vector_weight: float | None = None,
         keyword_weight: float | None = None,
+        rerank: bool | None = None,
     ) -> list[dict[str, Any]]: ...
 
 
@@ -242,6 +243,7 @@ async def run_retrieval_eval(
     k: int | None = None,
     vector_weight: float | None = None,
     keyword_weight: float | None = None,
+    rerank: bool | None = None,
 ) -> dict[str, Any]:
     """Execute one retrieval eval run and persist it. Returns the run row.
 
@@ -250,6 +252,14 @@ async def run_retrieval_eval(
     items = await repository.fetch_active_golden_items()
     if not items:
         raise EvalRunError("Golden set is empty — nothing to evaluate")
+
+    # RT-3 A/B: rerank=None honors config; True demands a configured reranker
+    # (fail loud — a run claiming rerank-on while silently skipping it lies).
+    effective_rerank = settings.rerank_enabled if rerank is None else rerank
+    if effective_rerank and not settings.rerank_enabled:
+        raise EvalRunError(
+            "rerank=true requested but RERANK_ENABLED is off — configure the reranker first"
+        )
 
     effective_k = k if k is not None else settings.retrieval_top_k
     # Exact snapshot of what this run evaluated (AC: parameterized toggles).
@@ -263,9 +273,12 @@ async def run_retrieval_eval(
         else settings.retrieval_keyword_weight,
         "candidatePool": settings.retrieval_candidate_pool,
         "efSearch": settings.hnsw_ef_search,
-        # Pipeline stages not yet in Release 3 scope are snapshotted off so
-        # comparisons stay honest once RT-3/RT-5 land.
-        "rerank": False,
+        # Exact rerank stage snapshot (RT-3): what ran, with which knobs.
+        "rerank": effective_rerank,
+        "rerankProvider": settings.rerank_provider if effective_rerank else None,
+        "rerankModel": settings.rerank_model if effective_rerank else None,
+        "rerankWindow": settings.rerank_window if effective_rerank else None,
+        # RT-5 lands later; snapshotted off so comparisons stay honest.
         "multiQuery": False,
     }
 
@@ -296,6 +309,7 @@ async def run_retrieval_eval(
                 k=effective_k,
                 vector_weight=vector_weight,
                 keyword_weight=keyword_weight,
+                rerank=effective_rerank,
             )
             retrieved_hashes = [chunk["content_hash"] for chunk in retrieved]
             item_scores = score_item(item["expectedChunkHashes"], retrieved_hashes, effective_k)
@@ -360,6 +374,7 @@ class RetrievalEvalRequest(BaseModel):
     k: int | None = Field(default=None, ge=1, le=50)
     vector_weight: float | None = Field(default=None, ge=0, alias="vectorWeight")
     keyword_weight: float | None = Field(default=None, ge=0, alias="keywordWeight")
+    rerank: bool | None = Field(default=None)
 
     model_config = {"populate_by_name": True}
 
@@ -381,6 +396,7 @@ async def execute_retrieval_eval(
             k=payload.k,
             vector_weight=payload.vector_weight,
             keyword_weight=payload.keyword_weight,
+            rerank=payload.rerank,
         )
     except EvalRunError as exc:
         # Fail loud (AC): empty/fully-stale golden set is a client-visible 409.

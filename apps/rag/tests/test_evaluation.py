@@ -130,9 +130,11 @@ class FakeRetrieval:
         self.hashes_by_question = hashes_by_question
         self.calls: list[dict[str, Any]] = []
 
-    async def retrieve(self, query, *, k=None, vector_weight=None, keyword_weight=None):
+    async def retrieve(
+        self, query, *, k=None, vector_weight=None, keyword_weight=None, rerank=None
+    ):
         self.calls.append(
-            {"query": query, "k": k, "vw": vector_weight, "kw": keyword_weight}
+            {"query": query, "k": k, "vw": vector_weight, "kw": keyword_weight, "rerank": rerank}
         )
         return [
             {"content_hash": h, "id": f"c-{i}", "document_id": "d", "content": "x"}
@@ -239,7 +241,9 @@ async def test_fully_stale_set_records_a_failed_run_and_raises(settings):
 
 async def test_retrieval_exception_marks_the_run_failed_and_reraises(settings):
     class ExplodingRetrieval:
-        async def retrieve(self, query, *, k=None, vector_weight=None, keyword_weight=None):
+        async def retrieve(
+            self, query, *, k=None, vector_weight=None, keyword_weight=None, rerank=None
+        ):
             raise RuntimeError("boom")
 
     repository = FakeEvalRepository([golden("q1", ["h1"])])

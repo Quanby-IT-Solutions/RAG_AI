@@ -30,6 +30,7 @@ from app.chunks import ChunksRepository
 from app.config import Settings
 from app.embeddings import EmbeddingsClient
 from app.ingest import get_embeddings_client
+from app.reranking import Reranker, build_reranker, rerank_with_fallback
 from app.security import verify_service_jwt
 from app.tracing import traced
 
@@ -66,10 +67,13 @@ class RetrievalService:
         settings: Settings,
         embeddings: EmbeddingsClient,
         repository: ChunksRepository,
+        reranker: Reranker | None = None,
     ) -> None:
         self._settings = settings
         self._embeddings = embeddings
         self._repository = repository
+        # RT-3: config-built cross-encoder (None when RERANK_ENABLED is off).
+        self._reranker = reranker if reranker is not None else build_reranker(settings)
 
     @traced(name="rag.retrieve")
     async def retrieve(
@@ -79,11 +83,15 @@ class RetrievalService:
         k: int | None = None,
         vector_weight: float | None = None,
         keyword_weight: float | None = None,
+        rerank: bool | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the top-k fused chunks (id, document_id, content, metadata,
-        chunk_index, similarity, rrf_score) for the query, best first.
+        """Return the top-k chunks (id, document_id, content, metadata,
+        chunk_index, similarity, rrf_score[, rerank_score]) for the query,
+        best first.
 
-        k / weights: per-request overrides; defaults come from Settings.
+        k / weights / rerank: per-request overrides; defaults come from
+        Settings (rerank=None honors the configured reranker; False forces
+        fused order for A/B comparison; True requires a configured reranker).
         Empty corpus (or no matches in either arm) -> [] cleanly (GN-1
         answers "I don't know")."""
         top_k = self._settings.retrieval_top_k if k is None else k
@@ -118,10 +126,26 @@ class RetrievalService:
         # RT-2 AC: both searches execute concurrently.
         vector_chunks, keyword_chunks = await asyncio.gather(vector_arm(), keyword_arm())
 
-        fused = reciprocal_rank_fusion(
+        fused_pool = reciprocal_rank_fusion(
             [(w_vector, vector_chunks), (w_keyword, keyword_chunks)],
             rrf_k=self._settings.rrf_k,
-        )[:top_k]
+        )
+
+        # ── RT-3 rerank stage: re-score the top window jointly with the query.
+        # rerank=False (eval A/B) degrades gracefully to fused order; failures
+        # under the hard timeout fall back to fused order too.
+        use_rerank = self._reranker is not None if rerank is None else rerank
+        reranked = False
+        if use_rerank and self._reranker is not None:
+            window = self._settings.rerank_window
+            reordered, reranked = await rerank_with_fallback(
+                self._reranker,
+                query=query,
+                chunks=fused_pool[:window],
+                timeout_seconds=self._settings.rerank_timeout_seconds,
+            )
+            fused_pool = [*reordered, *fused_pool[window:]]
+        fused = fused_pool[:top_k]
 
         # Per-request retrieved-chunk record (RT-1/RT-2 observability). stage
         # is "retrieved" — NOT "used in prompt" (GN-2 logs that separately).
@@ -134,6 +158,14 @@ class RetrievalService:
                     "ef_search": self._settings.hnsw_ef_search,
                     "weights": {"vector": w_vector, "keyword": w_keyword},
                     "rrf_k": self._settings.rrf_k,
+                    "rerank": {
+                        "requested": use_rerank,
+                        "applied": reranked,
+                        "window": self._settings.rerank_window if use_rerank else None,
+                        "provider": self._reranker.provider
+                        if use_rerank and self._reranker
+                        else None,
+                    },
                     "vector_arm": [
                         {"id": chunk["id"], "similarity": chunk["similarity"]}
                         for chunk in vector_chunks
@@ -143,7 +175,16 @@ class RetrievalService:
                         for chunk in keyword_chunks
                     ],
                     "chunks": [
-                        {"id": chunk["id"], "rrf_score": chunk["rrf_score"]} for chunk in fused
+                        {
+                            "id": chunk["id"],
+                            "rrf_score": chunk["rrf_score"],
+                            **(
+                                {"rerank_score": chunk["rerank_score"]}
+                                if "rerank_score" in chunk
+                                else {}
+                            ),
+                        }
+                        for chunk in fused
                     ],
                 }
             ),

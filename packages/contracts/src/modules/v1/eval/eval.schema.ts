@@ -116,6 +116,8 @@ export const ExecuteEvalRunRequestSchema = z.object({
 	k: z.number().int().min(1).max(50).optional(),
 	vectorWeight: z.number().min(0).optional(),
 	keywordWeight: z.number().min(0).optional(),
+	/** RT-3 A/B: omit = configured default; true requires a configured reranker. */
+	rerank: z.boolean().optional(),
 })
 
 /** Per-metric delta between two runs (candidate − base). */

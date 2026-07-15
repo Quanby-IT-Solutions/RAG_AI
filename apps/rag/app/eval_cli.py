@@ -22,6 +22,12 @@ async def _main() -> int:
     parser.add_argument("--k", type=int, default=None, help="top-k override")
     parser.add_argument("--vector-weight", type=float, default=None)
     parser.add_argument("--keyword-weight", type=float, default=None)
+    parser.add_argument(
+        "--rerank",
+        choices=["on", "off"],
+        default=None,
+        help="override the configured rerank stage (RT-3 A/B)",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -39,6 +45,7 @@ async def _main() -> int:
             k=args.k,
             vector_weight=args.vector_weight,
             keyword_weight=args.keyword_weight,
+            rerank=None if args.rerank is None else args.rerank == "on",
         )
     except EvalRunError as exc:
         print(f"eval run refused: {exc}", file=sys.stderr)

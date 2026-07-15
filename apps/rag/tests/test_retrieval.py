@@ -459,3 +459,76 @@ async def test_retrieve_endpoint_returns_chunks_with_content_hash(retrieve_app):
         "score": 0.03,
     }
     assert fake.calls == [{"query": "vacation", "k": 5}]
+
+
+# ------------------------------------------------------- RT-3 rerank stage
+class StubReranker:
+    model = "stub-model"
+    provider = "stub"
+
+    def __init__(self, scores: dict[str, float] | None = None, error: Exception | None = None):
+        self.scores = scores or {}
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def rerank(self, query, chunks):
+        self.calls.append({"query": query, "count": len(chunks)})
+        if self.error:
+            raise self.error
+        reordered = [
+            {**c, "rerank_score": self.scores.get(c["id"], 0.0)} for c in chunks
+        ]
+        reordered.sort(key=lambda c: c["rerank_score"], reverse=True)
+        return reordered
+
+
+def make_reranked_service(settings, *, rows, reranker):
+    embeddings = FakeEmbeddingsClient()
+    repository = FakeChunksRepository(rows, None)
+    service = RetrievalService(settings, embeddings, repository, reranker=reranker)
+    return service, reranker
+
+
+async def test_rerank_reorders_the_fused_window_before_top_k(settings):
+    rows = [make_chunk_row(0.9, 0), make_chunk_row(0.8, 1), make_chunk_row(0.7, 2)]
+    # The cross-encoder disagrees with fusion: last fused chunk is best.
+    reranker = StubReranker(scores={rows[2]["id"]: 0.9, rows[1]["id"]: 0.5, rows[0]["id"]: 0.1})
+    service, _ = make_reranked_service(settings, rows=rows, reranker=reranker)
+
+    chunks = await service.retrieve("query", k=2)
+
+    assert [c["id"] for c in chunks] == [rows[2]["id"], rows[1]["id"]]
+    assert chunks[0]["rerank_score"] == 0.9
+    # The whole fused window (all 3 candidates) was scored, not just top-k.
+    assert reranker.calls[0]["count"] == 3
+
+
+async def test_rerank_false_forces_fused_order_for_ab_comparison(settings):
+    rows = [make_chunk_row(0.9, 0), make_chunk_row(0.8, 1)]
+    reranker = StubReranker(scores={rows[1]["id"]: 1.0})
+    service, _ = make_reranked_service(settings, rows=rows, reranker=reranker)
+
+    chunks = await service.retrieve("query", k=2, rerank=False)
+
+    assert [c["id"] for c in chunks] == [rows[0]["id"], rows[1]["id"]]
+    assert reranker.calls == []
+
+
+async def test_rerank_failure_degrades_to_fused_order(settings):
+    rows = [make_chunk_row(0.9, 0), make_chunk_row(0.8, 1)]
+    reranker = StubReranker(error=RuntimeError("cross-encoder down"))
+    service, _ = make_reranked_service(settings, rows=rows, reranker=reranker)
+
+    chunks = await service.retrieve("query", k=2)
+
+    assert [c["id"] for c in chunks] == [rows[0]["id"], rows[1]["id"]]
+    assert "rerank_score" not in chunks[0]
+
+
+async def test_no_reranker_configured_keeps_fused_order(settings):
+    rows = [make_chunk_row(0.9, 0), make_chunk_row(0.8, 1)]
+    service, _, _ = make_service(settings, rows=rows)
+
+    chunks = await service.retrieve("query", k=2)
+
+    assert [c["id"] for c in chunks] == [rows[0]["id"], rows[1]["id"]]

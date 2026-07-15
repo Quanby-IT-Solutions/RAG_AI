@@ -26,6 +26,11 @@ dependencies = [
 ]
 
 [dependency-groups]
+# RT-3 local cross-encoder (RERANK_PROVIDER=local); heavy (torch) so opt-in:
+# uv sync --group rerank
+rerank = [
+    "sentence-transformers>=3.0",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.25",

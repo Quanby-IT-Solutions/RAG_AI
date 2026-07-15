@@ -55,13 +55,18 @@ export function RunsPanel() {
 	const executeRun = useExecuteEvalRunMutation()
 
 	const [kText, setKText] = useState("")
+	const [rerankMode, setRerankMode] = useState<"default" | "on" | "off">("default")
 	const [baseId, setBaseId] = useState<string | null>(null)
 	const [candidateId, setCandidateId] = useState<string | null>(null)
 	const comparison = useEvalRunComparisonQuery(baseId, candidateId)
 
 	const handleExecute = () => {
 		const k = Number.parseInt(kText, 10)
-		executeRun.mutate(Number.isNaN(k) ? {} : { k })
+		executeRun.mutate({
+			...(Number.isNaN(k) ? {} : { k }),
+			// RT-3 A/B: "default" omits the flag (configured behavior).
+			...(rerankMode === "default" ? {} : { rerank: rerankMode === "on" }),
+		})
 	}
 
 	const toggleCompare = (id: string) => {
@@ -98,6 +103,21 @@ export function RunsPanel() {
 							placeholder="5"
 						/>
 					</div>
+					<div className="flex flex-col gap-2">
+						<Label htmlFor="run-rerank">Rerank</Label>
+						<select
+							id="run-rerank"
+							className="border-input bg-background h-9 rounded-md border px-2 text-sm"
+							value={rerankMode}
+							onChange={event =>
+								setRerankMode(event.target.value as "default" | "on" | "off")
+							}
+						>
+							<option value="default">config default</option>
+							<option value="on">on</option>
+							<option value="off">off</option>
+						</select>
+					</div>
 					<Button type="button" onClick={handleExecute} disabled={executeRun.isPending}>
 						{executeRun.isPending ? "Running…" : "Run evaluation"}
 					</Button>
@@ -128,6 +148,7 @@ export function RunsPanel() {
 									<TableHead>Status</TableHead>
 									<TableHead>Git SHA</TableHead>
 									<TableHead>k</TableHead>
+									<TableHead>Rerank</TableHead>
 									<TableHead>Hit rate</TableHead>
 									<TableHead>MRR</TableHead>
 									<TableHead>P@k</TableHead>
@@ -161,6 +182,7 @@ export function RunsPanel() {
 												{run.gitSha.slice(0, 10)}
 											</TableCell>
 											<TableCell>{String(run.config["k"] ?? "—")}</TableCell>
+											<TableCell>{run.config["rerank"] ? "on" : "off"}</TableCell>
 											{METRIC_COLUMNS.map(metric => (
 												<TableCell key={metric} className="font-mono text-xs">
 													{formatMetric(run.metrics?.[metric])}
