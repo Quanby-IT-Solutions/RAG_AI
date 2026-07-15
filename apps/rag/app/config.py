@@ -81,6 +81,12 @@ class Settings(BaseSettings):
         alias="ROUTING_MIN_TOP_SIMILARITY", default=0.2, ge=0, le=1
     )
 
+    # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
+    retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
+    retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)
+    breaker_failure_threshold: int = Field(alias="BREAKER_FAILURE_THRESHOLD", default=5, ge=1)
+    breaker_cooldown_seconds: int = Field(alias="BREAKER_COOLDOWN_SECONDS", default=30, ge=1)
+
     # --- Chunking (IN-4) — semantic primary, recursive fallback. Fixed-size
     # chunking is intentionally NOT selectable (ticket AC): the Literal only
     # admits meaning-based strategies.

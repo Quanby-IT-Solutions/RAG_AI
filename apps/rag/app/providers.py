@@ -184,7 +184,9 @@ class AnthropicChatClient:
         return content, self._usage(getattr(response, "usage", None))
 
     async def stream(self, messages: list[dict[str, str]]) -> Any:
-        """Streamed completion: same delta + ("__usage__", usage) contract."""
+        """Streamed completion: same delta + ("__usage__", usage) contract.
+        Opening the stream runs under the hard timeout (GN-5 timeout audit);
+        the stream itself is unbounded by design (long answers)."""
         system, chat = self._split_messages(messages)
         manager = self._anthropic().messages.stream(
             model=self.model,
@@ -193,12 +195,19 @@ class AnthropicChatClient:
             messages=chat,  # type: ignore[arg-type]
         )
         token_usage: dict[str, int] | None = None
-        async with manager as stream:
+        stream = await with_hard_timeout(
+            manager.__aenter__(),
+            seconds=self._settings.external_call_timeout_seconds,
+            operation="anthropic.messages.stream",
+        )
+        try:
             async for delta in stream.text_stream:
                 if delta:
                     yield delta
             final = await stream.get_final_message()
             token_usage = self._usage(getattr(final, "usage", None))
+        finally:
+            await manager.__aexit__(None, None, None)
         yield ("__usage__", token_usage)
 
 

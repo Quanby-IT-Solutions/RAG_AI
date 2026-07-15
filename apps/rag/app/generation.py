@@ -37,6 +37,7 @@ from app.providers import (
     SingleClientRouter,
     build_model_router,
 )
+from app.reliability import CircuitBreaker, ReliabilityRouter, validate_output
 from app.retrieval import RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
 from app.tracing import traced
@@ -54,6 +55,12 @@ I_DONT_KNOW_ANSWER = "I don't know."
 DEGRADED_ANSWER = (
     "I couldn't generate an answer right now because the language model is "
     "unavailable. Please try again in a moment."
+)
+# GN-5 output validation failure: replace the invalid answer with a safe,
+# bounded response — never return leaked scaffolding or broken citations.
+VALIDATION_FAILED_ANSWER = (
+    "I generated an answer but it failed output validation, so it was "
+    "withheld. Please try asking again."
 )
 
 # Grounded LCEL prompt (langchain-core ChatPromptTemplate): the model may use
@@ -158,6 +165,18 @@ class GenerationService:
             )
         return citations
 
+    async def _route(
+        self, *, query: str, chunks: list[dict[str, Any]]
+    ) -> tuple[Any, dict[str, Any]]:
+        """Route via the configured router; supports both the sync GN-4
+        routers and the async GN-5 ReliabilityRouter."""
+        import inspect
+
+        routed = self._router.route(query=query, chunks=chunks)
+        if inspect.isawaitable(routed):
+            routed = await routed
+        return routed
+
     async def _prepare(self, *, query: str, k: int | None) -> dict[str, Any]:
         """Shared Flow B steps 3-5 for both response modes: hybrid retrieve
         (RT-1/RT-2), hard token budget (GN-2, rank-then-select), grounded
@@ -225,8 +244,8 @@ class GenerationService:
         used_record = prep["used_record"]
         selection = prep["selection"]
 
-        # Flow B route stage (GN-4): cheap-fast vs strong, decision recorded.
-        client, routing = self._router.route(query=query, chunks=chunks)
+        # Flow B route stage (GN-4/GN-5): decision + breaker state recorded.
+        client, routing = await self._route(query=query, chunks=chunks)
         logger.info("chat.routing %s", json.dumps(routing))
 
         token_usage: dict[str, int] | None = None
@@ -257,6 +276,16 @@ class GenerationService:
             else:
                 # Citations resolve against the USED context blocks.
                 citations = await self._build_citations(answer_text, used_chunks)
+                # GN-5: validate BEFORE returning — invalid output is replaced
+                # by a safe response, never served (traced via the log/audit).
+                problems = validate_output(
+                    answer_text, citations=citations, chunk_count=len(used_chunks)
+                )
+                if problems:
+                    logger.warning("chat.output_validation_failed %s", json.dumps(problems))
+                    answer_text = VALIDATION_FAILED_ANSWER
+                    citations = []
+                    degraded = True
 
         # Flow B step 7: persist the turn (NEW conversation per request, R1
         # single-turn) — user + assistant rows written atomically.
@@ -329,8 +358,8 @@ class GenerationService:
         prep = await self._prepare(query=query, k=k)
         used_chunks = prep["used_chunks"]
 
-        # Flow B route stage (GN-4): decision recorded before generation.
-        client, routing = self._router.route(query=query, chunks=prep["chunks"])
+        # Flow B route stage (GN-4/GN-5): decision recorded before generation.
+        client, routing = await self._route(query=query, chunks=prep["chunks"])
         logger.info("chat.routing %s", json.dumps(routing))
 
         token_usage: dict[str, int] | None = None
@@ -381,6 +410,17 @@ class GenerationService:
             citations: list[dict[str, Any]] = []
         else:
             citations = await self._build_citations(answer_text, used_chunks)
+            # GN-5: validate before the FINAL FLUSH — the final frame carries
+            # the safe replacement, flagged degraded (already-streamed deltas
+            # cannot be unsent; the client renders the final frame's answer).
+            problems = validate_output(
+                answer_text, citations=citations, chunk_count=len(used_chunks)
+            )
+            if problems:
+                logger.warning("chat.output_validation_failed %s", json.dumps(problems))
+                answer_text = VALIDATION_FAILED_ANSWER
+                citations = []
+                degraded = True
 
         conversation_id, message_id = await self._repository.persist_turn(
             user_id=principal.sub,
@@ -454,7 +494,12 @@ def get_chat_client(request: Request) -> "ModelRouter | SingleClientRouter | Cha
     name is kept from GN-1; since GN-4 it returns the ModelRouter."""
     client = getattr(request.app.state, "chat_client", None)
     if client is None:
-        client = build_model_router(request.app.state.settings)
+        settings = request.app.state.settings
+        client = ReliabilityRouter(
+            build_model_router(settings),
+            breaker=CircuitBreaker(settings),
+            settings=settings,
+        )
         request.app.state.chat_client = client
     return client
 

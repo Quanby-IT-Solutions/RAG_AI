@@ -175,14 +175,29 @@ async def test_grounded_answer_with_citations_resolving_to_source_and_section(se
     assert repository.source_lookups == [sorted({DOC_ID, OTHER_DOC_ID})]
 
 
-async def test_only_cited_blocks_become_citations_and_bogus_markers_are_ignored(settings):
+async def test_only_cited_blocks_become_citations(settings):
+    chunks = [make_chunk("Fact one."), make_chunk("Fact two.", similarity=0.7)]
+    client = FakeChatClient(answer="Only fact one matters [1].")
+    service, _, _, _ = make_service(settings, chunks=chunks, chat_client=client)
+
+    result = await service.answer(query="q", k=None, principal=PRINCIPAL)
+
+    assert [c["chunkId"] for c in result["citations"]] == [chunks[0]["id"]]
+
+
+async def test_bogus_citation_markers_fail_output_validation(settings):
+    """GN-5 supersedes GN-1's silent-ignore: a marker pointing at a
+    nonexistent context block means the answer is invalid — withheld and
+    replaced by a safe response, never served."""
     chunks = [make_chunk("Fact one."), make_chunk("Fact two.", similarity=0.7)]
     client = FakeChatClient(answer="Only fact one matters [1]. Ignore [9].")
     service, _, _, _ = make_service(settings, chunks=chunks, chat_client=client)
 
     result = await service.answer(query="q", k=None, principal=PRINCIPAL)
 
-    assert [c["chunkId"] for c in result["citations"]] == [chunks[0]["id"]]
+    assert result["degraded"] is True
+    assert result["citations"] == []
+    assert "failed output validation" in result["answer"]
 
 
 # ------------------------------------------------ B1: empty retrieval -> IDK
