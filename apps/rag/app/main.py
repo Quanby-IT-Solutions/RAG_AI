@@ -107,14 +107,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     async def health(response: Response) -> dict:
         checks = await run_health_checks(settings)
+        # OB-3: readiness gates on DB + Redis only; provider reachability is
+        # informational (breaker owns runtime failover) and interval-cached.
         ready = all(status == "up" for status in checks.values())
+        providers = await health_checks.check_providers(settings)
+        degraded = any(status != "up" for status in providers.values())
         if not ready:
             response.status_code = 503
         return {
-            "status": "ok" if ready else "unavailable",
+            "status": "unavailable" if not ready else ("degraded" if degraded else "ok"),
             "live": True,
             "ready": ready,
             "checks": checks,
+            "providers": providers,
         }
 
     return app

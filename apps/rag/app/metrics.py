@@ -21,6 +21,7 @@ from typing import Any
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -61,6 +62,11 @@ BUCKET_EVENTS = Counter(
     "rag_provider_bucket_events_total",
     "Provider-bucket events (acquired/waited/shed)",
     ["provider", "event"],
+)
+BREAKER_OPEN = Gauge(
+    "rag_breaker_open",
+    "1 while a provider circuit is open (OB-3 alert source)",
+    ["provider"],
 )
 ERRORS = Counter(
     "rag_errors_total",

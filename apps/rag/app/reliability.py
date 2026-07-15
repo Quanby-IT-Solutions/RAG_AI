@@ -116,6 +116,12 @@ class CircuitBreaker:
 
     async def record_success(self, provider: str) -> None:
         keys = self._keys(provider)
+        try:
+            from app.metrics import BREAKER_OPEN
+
+            BREAKER_OPEN.labels(provider=provider).set(0)
+        except Exception:
+            pass
         await self._r().delete(keys["failures"], keys["half"], keys["probe"], keys["open"])
 
     async def record_failure(self, provider: str) -> None:
@@ -125,6 +131,12 @@ class CircuitBreaker:
         failures = int(await redis.incr(keys["failures"]))
         await redis.expire(keys["failures"], max(60, self.cooldown_seconds * 2))
         if probe_failed or failures >= self.failure_threshold:
+            try:
+                from app.metrics import BREAKER_OPEN
+
+                BREAKER_OPEN.labels(provider=provider).set(1)
+            except Exception:
+                pass
             await redis.set(keys["open"], "1", ex=self.cooldown_seconds)
             # half flag outlives the open window so the next caller probes.
             await redis.set(keys["half"], "1", ex=self.cooldown_seconds * 20)

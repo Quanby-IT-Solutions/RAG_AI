@@ -1,0 +1,14 @@
+# OB-3: Alertmanager routing — point the webhook at the team channel per
+# deployment (Slack/Teams bridge). Alerts resolve automatically on recovery.
+route:
+  receiver: team-webhook
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: team-webhook
+    webhook_configs:
+      - url: http://backend:3000/api/v1/ops/alert-webhook # replace per deployment
+        send_resolved: true

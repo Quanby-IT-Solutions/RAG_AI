@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     # --- Observability (OB-1) — per-deployment price overrides (USD/1M),
     # JSON: {"model": [inputPrice, outputPrice], ...}.
     model_pricing_json: str | None = Field(alias="MODEL_PRICING_JSON", default=None)
+    # OB-3: provider reachability is probed at most this often (cached).
+    provider_probe_enabled: bool = Field(alias="PROVIDER_PROBE_ENABLED", default=True)
+    provider_probe_interval_seconds: float = Field(
+        alias="PROVIDER_PROBE_INTERVAL_SECONDS", default=60.0, gt=0
+    )
+    provider_probe_timeout_seconds: float = Field(
+        alias="PROVIDER_PROBE_TIMEOUT_SECONDS", default=5.0, gt=0
+    )
 
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)

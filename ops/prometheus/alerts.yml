@@ -1,0 +1,55 @@
+# OB-3: threshold alert rules AS CODE. Thresholds are deployment config —
+# tune the numbers here (initial values to be re-derived from the DP-3
+# load-test baseline per PRD Annex A#13); no application code change needed.
+groups:
+  - name: ragp-service
+    rules:
+      - alert: HighErrorRate
+        expr: >
+          sum(rate(rag_errors_total[5m]))
+            / clamp_min(sum(rate(rag_http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "5xx error rate above 5% for 5m"
+
+      - alert: HighLatencyP95
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(rag_http_request_duration_seconds_bucket[5m]))) > 10
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "p95 request latency above 10s for 10m"
+
+      - alert: ThroughputCollapse
+        expr: >
+          sum(rate(rag_http_requests_total[5m])) < 0.01
+          and sum(rate(rag_http_requests_total[1h] offset 1h)) > 0.1
+        for: 15m
+        labels: { severity: warn }
+        annotations:
+          summary: "Traffic collapsed vs the previous hour"
+
+      - alert: CacheHitRateDrop
+        expr: >
+          sum(rate(rag_cache_lookups_total{result=~"hits|semanticHits"}[30m]))
+            / clamp_min(sum(rate(rag_cache_lookups_total[30m])), 1e-9) < 0.30
+        for: 30m
+        labels: { severity: warn }
+        annotations:
+          summary: "Cache hit-rate below the 30% NFR for 30m"
+
+      - alert: ProviderCircuitOpen
+        expr: max by (provider) (rag_breaker_open) == 1
+        for: 1m
+        labels: { severity: page }
+        annotations:
+          summary: "GN-5 circuit breaker OPEN for {{ $labels.provider }}"
+
+      - alert: ProviderBucketShedding
+        expr: sum by (provider) (rate(rag_provider_bucket_events_total{event="shed"}[5m])) > 0
+        for: 5m
+        labels: { severity: warn }
+        annotations:
+          summary: "CP-4 bucket shedding requests for {{ $labels.provider }}"

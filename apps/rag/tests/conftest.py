@@ -14,6 +14,8 @@ REQUIRED_ENV = {
     "CACHE_ENABLED": "false",
     # CP-4: unit tests never draw from a real provider budget.
     "PROVIDER_BUCKET_ENABLED": "false",
+    # OB-3: unit tests never probe real provider endpoints.
+    "PROVIDER_PROBE_ENABLED": "false",
 }
 
 
