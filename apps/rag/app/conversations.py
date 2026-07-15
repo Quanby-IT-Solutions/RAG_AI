@@ -35,6 +35,22 @@ _SELECT_DOCUMENT_SOURCES_SQL = """
 SELECT id, source_uri FROM documents WHERE id = ANY($1::uuid[])
 """
 
+_SELECT_CONVERSATION_OWNER_SQL = """
+SELECT user_id FROM conversations WHERE id = $1
+"""
+
+_NEXT_TURN_INDEX_SQL = """
+SELECT COALESCE(MAX(turn_index), -1) + 1 FROM messages WHERE conversation_id = $1
+"""
+
+# CH-3 retention purge: conversations older than the deployment retention
+# window are deleted; messages cascade (FK ON DELETE CASCADE).
+_PURGE_EXPIRED_SQL = """
+DELETE FROM conversations
+WHERE created_at < now() - make_interval(days => $1)
+RETURNING id
+"""
+
 
 class ConversationsRepository:
     """INSERT-only access to `conversations`/`messages`, plus the read-only
@@ -66,6 +82,33 @@ class ConversationsRepository:
             await conn.close()
         return {str(row["id"]): row["source_uri"] for row in rows}
 
+    async def fetch_conversation_owner(self, conversation_id: str) -> str | None:
+        """Owner lookup for the CH-3 own-scope rule (None = unknown id)."""
+        conn = await self._connect()
+        try:
+            owner = await with_hard_timeout(
+                conn.fetchval(_SELECT_CONVERSATION_OWNER_SQL, conversation_id),
+                seconds=self._settings.db_timeout_seconds,
+                operation="conversations.fetch_owner",
+            )
+        finally:
+            await conn.close()
+        return str(owner) if owner else None
+
+    async def purge_expired(self, retention_days: int) -> int:
+        """CH-3 retention: delete conversations past the deployment window
+        (messages cascade). Returns the purged conversation count."""
+        conn = await self._connect()
+        try:
+            rows = await with_hard_timeout(
+                conn.fetch(_PURGE_EXPIRED_SQL, retention_days),
+                seconds=self._settings.db_timeout_seconds,
+                operation="conversations.purge_expired",
+            )
+        finally:
+            await conn.close()
+        return len(rows)
+
     async def persist_turn(
         self,
         *,
@@ -78,18 +121,29 @@ class ConversationsRepository:
         token_usage: dict[str, Any] | None,
         trace_id: str,
         model_used: str,
+        conversation_id: str | None = None,
     ) -> tuple[str, str]:
-        """Create the NEW conversation (single-turn R1) and write the user +
-        assistant message rows in ONE transaction — a partial turn is never
-        persisted. Returns (conversation_id, assistant_message_id)."""
+        """Write the user + assistant message rows in ONE transaction — a
+        partial turn is never persisted. Without `conversation_id` a NEW
+        conversation is created (GN-1); with it the turn APPENDS to the
+        existing conversation at the next turn_index (CH-3 continue).
+        Returns (conversation_id, assistant_message_id)."""
         conn = await self._connect()
         try:
             async with conn.transaction():
-                conversation_id = await with_hard_timeout(
-                    conn.fetchval(_INSERT_CONVERSATION_SQL, user_id),
-                    seconds=self._settings.db_timeout_seconds,
-                    operation="conversations.insert",
-                )
+                if conversation_id is None:
+                    conversation_id = await with_hard_timeout(
+                        conn.fetchval(_INSERT_CONVERSATION_SQL, user_id),
+                        seconds=self._settings.db_timeout_seconds,
+                        operation="conversations.insert",
+                    )
+                    next_turn = 0
+                else:
+                    next_turn = await with_hard_timeout(
+                        conn.fetchval(_NEXT_TURN_INDEX_SQL, conversation_id),
+                        seconds=self._settings.db_timeout_seconds,
+                        operation="messages.next_turn_index",
+                    )
                 await with_hard_timeout(
                     conn.fetchval(
                         _INSERT_MESSAGE_SQL,
@@ -102,7 +156,7 @@ class ConversationsRepository:
                         None,
                         trace_id,
                         None,
-                        0,
+                        next_turn,
                     ),
                     seconds=self._settings.db_timeout_seconds,
                     operation="messages.insert_user",
@@ -119,7 +173,7 @@ class ConversationsRepository:
                         json.dumps(token_usage) if token_usage is not None else None,
                         trace_id,
                         model_used,
-                        1,
+                        next_turn + 1,
                     ),
                     seconds=self._settings.db_timeout_seconds,
                     operation="messages.insert_assistant",

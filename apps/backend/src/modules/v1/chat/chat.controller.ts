@@ -12,7 +12,8 @@ import { env } from "@/config/env.config"
 import { RequirePermissions } from "@/shared/decorators/require-permissions.decorator"
 import { StrictThrottle } from "@/shared/decorators/strict-throttle.decorator"
 
-import { RagGatewayService } from "../corpus/rag-gateway.service"
+import { RagGatewayService, toORPCError } from "../corpus/rag-gateway.service"
+import { ChatHistoryService } from "./chat-history.service"
 
 /**
  * Chat endpoint (Flow B, GN-1) — oRPC JSON, non-streamed (Tech Plan §5, D3).
@@ -27,7 +28,8 @@ import { RagGatewayService } from "../corpus/rag-gateway.service"
 export class ChatController {
 	constructor(
 		private readonly ragGatewayService: RagGatewayService,
-		private readonly rbacService: RbacService
+		private readonly rbacService: RbacService,
+		private readonly chatHistoryService: ChatHistoryService
 	) {}
 
 	@StrictThrottle()
@@ -43,15 +45,36 @@ export class ChatController {
 			const access = await this.rbacService.getUserAccess(session.user.id)
 			const correlationId = String(request.id ?? crypto.randomUUID())
 
-			const answer = await this.ragGatewayService.submitChatQuery({
-				query: input.query,
-				k: input.k,
-				userId: session.user.id,
-				permissions: access.permissions,
-				requestId: correlationId,
-				traceId: correlationId,
-			})
+			const answer = await this.ragGatewayService
+				.submitChatQuery({
+					query: input.query,
+					k: input.k,
+					conversationId: input.conversationId,
+					userId: session.user.id,
+					permissions: access.permissions,
+					requestId: correlationId,
+					traceId: correlationId,
+				})
+				.catch(toORPCError)
 			return answer as ChatAnswer
+		})
+	}
+
+	// ── Conversation history (CH-3) — own-scope, chat.history.read ──────────
+
+	@RequirePermissions("chat.history.read")
+	@Implement(v1.chat.history.list)
+	async listHistory(@Session() session: UserSession) {
+		return implement(v1.chat.history.list).handler(async () => {
+			return this.chatHistoryService.listConversations(session.user.id)
+		})
+	}
+
+	@RequirePermissions("chat.history.read")
+	@Implement(v1.chat.history.get)
+	async getHistory(@Session() session: UserSession) {
+		return implement(v1.chat.history.get).handler(async ({ input }) => {
+			return this.chatHistoryService.getConversation(session.user.id, input.id)
 		})
 	}
 

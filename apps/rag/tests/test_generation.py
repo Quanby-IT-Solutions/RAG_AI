@@ -101,6 +101,11 @@ class FakeConversationsRepository:
         self.source_lookups: list[list[str]] = []
         self.conversation_id = str(uuid.uuid4())
         self.message_id = str(uuid.uuid4())
+        # CH-3: conversation_id -> owner user id
+        self.owners: dict[str, str] = {}
+
+    async def fetch_conversation_owner(self, conversation_id: str) -> str | None:
+        return self.owners.get(conversation_id)
 
     async def fetch_document_sources(self, document_ids: list[str]) -> dict[str, str]:
         self.source_lookups.append(list(document_ids))
@@ -763,3 +768,57 @@ async def test_routing_keeps_simple_queries_on_cheap_fast(settings):
 
     assert cheap.calls and not strong.calls
     assert result["model"] == "gpt-4o-mini"
+
+
+# ------------------------------------------- conversation continuation (CH-3)
+async def test_continue_appends_to_an_owned_conversation(settings):
+    service, _, _, repository = make_service(
+        settings, chunks=[make_chunk("Vacation is 20 days.")]
+    )
+    existing = "11111111-1111-4111-8111-111111111111"
+    repository.owners[existing] = PRINCIPAL.sub
+
+    result = await service.answer(
+        query="And how many carry over?", k=None, principal=PRINCIPAL,
+        conversation_id=existing,
+    )
+
+    assert repository.turns[0]["conversation_id"] == existing
+    assert result["answer"]
+
+
+async def test_continuing_someone_elses_conversation_is_denied_and_audited(settings):
+    from app.generation import ConversationAccessError
+
+    service, _, client, repository = make_service(
+        settings, chunks=[make_chunk("Vacation is 20 days.")]
+    )
+    theirs = "22222222-2222-4222-8222-222222222222"
+    repository.owners[theirs] = "someone-else"
+
+    with pytest.raises(ConversationAccessError) as excinfo:
+        await service.answer(
+            query="q", k=None, principal=PRINCIPAL, conversation_id=theirs
+        )
+
+    assert excinfo.value.found is True
+    assert client.calls == []  # denied before any model call
+    denial = repository.audits[0]
+    assert denial["action"] == "chat.history.denied"
+    assert denial["resource_id"] == theirs
+    assert denial["after"] == {"reason": "not-owner"}
+
+
+async def test_continuing_an_unknown_conversation_reports_not_found(settings):
+    from app.generation import ConversationAccessError
+
+    service, _, _, repository = make_service(settings, chunks=[])
+
+    with pytest.raises(ConversationAccessError) as excinfo:
+        await service.answer(
+            query="q", k=None, principal=PRINCIPAL,
+            conversation_id="33333333-3333-4333-8333-333333333333",
+        )
+
+    assert excinfo.value.found is False
+    assert repository.audits[0]["after"] == {"reason": "not-found"}

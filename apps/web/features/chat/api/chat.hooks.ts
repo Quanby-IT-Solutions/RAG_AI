@@ -1,8 +1,8 @@
 "use client"
 
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery } from "@tanstack/react-query"
 
-import type { ChatAnswer, ChatQueryInput } from "@repo/contracts"
+import type { ChatAnswer, ChatCitation, ChatQueryInput } from "@repo/contracts"
 
 import { ApiError } from "@/core/lib/api-error"
 import { env } from "@/env"
@@ -48,6 +48,71 @@ export function useChatQueryMutation() {
 	return useMutation<ChatAnswer, Error, ChatQueryInput>({
 		mutationKey: ["chat", "query"],
 		mutationFn: submitChatQuery,
+	})
+}
+
+// ── Conversation history (CH-3) ─────────────────────────────────────────────
+
+export type ConversationSummaryUi = {
+	id: string
+	title: string
+	messageCount: number
+	createdAt: string
+	lastMessageAt: string | null
+}
+
+export type ConversationMessageUi = {
+	id: string
+	role: "user" | "assistant"
+	content: string
+	citations: ChatCitation[] | null
+	turnIndex: number
+	createdAt: string
+}
+
+export type ConversationDetailUi = {
+	id: string
+	createdAt: string
+	messages: ConversationMessageUi[]
+}
+
+async function fetchConversations(): Promise<ConversationSummaryUi[]> {
+	const response = await fetch(`${API_BASE}/chat/history`, {
+		credentials: "include",
+		headers: { "Content-Type": "application/json" },
+	})
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	return (await response.json()) as ConversationSummaryUi[]
+}
+
+async function fetchConversation(id: string): Promise<ConversationDetailUi> {
+	const response = await fetch(`${API_BASE}/chat/history/${id}`, {
+		credentials: "include",
+		headers: { "Content-Type": "application/json" },
+	})
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	return (await response.json()) as ConversationDetailUi
+}
+
+export function useConversationsQuery(enabled = true) {
+	return useQuery({
+		queryKey: ["chat", "history"],
+		queryFn: fetchConversations,
+		enabled,
+		retry: (failureCount, error) => !isPermissionError(error) && failureCount < 3,
+	})
+}
+
+export function useConversationQuery(id: string | null) {
+	return useQuery({
+		queryKey: ["chat", "history", id ?? "none"],
+		queryFn: () => fetchConversation(id as string),
+		enabled: id !== null,
+		retry: (failureCount, error) => !isPermissionError(error) && failureCount < 3,
 	})
 }
 

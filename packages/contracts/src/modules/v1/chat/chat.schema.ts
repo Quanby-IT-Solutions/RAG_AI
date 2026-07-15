@@ -32,6 +32,8 @@ export const ChatQueryInputSchema = z.object({
 	query: z.string().trim().min(1).max(4000),
 	// Per-request top-k override; the RAG service default (RETRIEVAL_TOP_K) applies when omitted.
 	k: z.number().int().min(1).max(50).optional(),
+	// CH-3: continue an existing conversation the caller owns; omitted -> new.
+	conversationId: z.string().uuid().optional(),
 })
 
 /**
@@ -52,7 +54,46 @@ export const ChatAnswerSchema = z.object({
 	degraded: z.boolean(),
 })
 
+// ── Conversation history (CH-3) ─────────────────────────────────────────────
+
+/** One row in the caller's history list (own conversations only). */
+export const ConversationSummarySchema = z.object({
+	id: z.string().uuid(),
+	// Derived from the first user message (no title column) — display only.
+	title: z.string(),
+	messageCount: z.number().int().nonnegative(),
+	createdAt: z
+		.union([z.date(), z.string()])
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+	lastMessageAt: z
+		.union([z.date(), z.string()])
+		.nullable()
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+})
+
+export const ConversationMessageSchema = z.object({
+	id: z.string().uuid(),
+	role: z.enum(["user", "assistant"]),
+	content: z.string(),
+	citations: z.array(ChatCitationSchema).nullable(),
+	turnIndex: z.number().int().nonnegative(),
+	createdAt: z
+		.union([z.date(), z.string()])
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+})
+
+export const ConversationDetailSchema = z.object({
+	id: z.string().uuid(),
+	createdAt: z
+		.union([z.date(), z.string()])
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+	messages: z.array(ConversationMessageSchema),
+})
+
 export type ChatCitation = z.infer<typeof ChatCitationSchema>
 export type ChatTokenUsage = z.infer<typeof ChatTokenUsageSchema>
 export type ChatQueryInput = z.infer<typeof ChatQueryInputSchema>
 export type ChatAnswer = z.infer<typeof ChatAnswerSchema>
+export type ConversationSummary = z.infer<typeof ConversationSummarySchema>
+export type ConversationMessage = z.infer<typeof ConversationMessageSchema>
+export type ConversationDetail = z.infer<typeof ConversationDetailSchema>

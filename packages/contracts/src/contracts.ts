@@ -78,12 +78,18 @@ export {
 	ChatAnswerSchema,
 	ChatCitationSchema,
 	ChatTokenUsageSchema,
+	ConversationSummarySchema,
+	ConversationMessageSchema,
+	ConversationDetailSchema,
 } from "./modules/v1/chat/chat.schema.js"
 export type {
 	ChatQueryInput,
 	ChatAnswer,
 	ChatCitation,
 	ChatTokenUsage,
+	ConversationSummary,
+	ConversationMessage,
+	ConversationDetail,
 } from "./modules/v1/chat/chat.schema.js"
 
 // Current-user access schemas

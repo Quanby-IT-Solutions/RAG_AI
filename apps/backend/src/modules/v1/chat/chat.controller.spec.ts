@@ -8,6 +8,7 @@ import { RbacGuard } from "@/shared/guards/rbac.guard"
 import { REQUIRED_PERMISSIONS_KEY } from "@/shared/decorators/require-permissions.decorator"
 
 import { RagGatewayService } from "../corpus/rag-gateway.service"
+import { ChatHistoryService } from "./chat-history.service"
 import { ChatController } from "./chat.controller"
 
 const mockChatInput = { query: "How many vacation days?", k: 2 }
@@ -39,7 +40,7 @@ jest.mock("@orpc/server", () => ({
 }))
 
 jest.mock("@/config/api-versions.config", () => ({
-	v1: { chat: { query: { submit: {} } } },
+	v1: { chat: { query: { submit: {} }, history: { list: {}, get: {} } } },
 }))
 
 jest.mock("@/config/env.config", () => ({
@@ -90,6 +91,7 @@ describe("ChatController", () => {
 			providers: [
 				{ provide: RbacService, useValue: rbacService },
 				{ provide: RagGatewayService, useValue: ragGatewayService },
+				{ provide: ChatHistoryService, useValue: { listConversations: jest.fn(), getConversation: jest.fn() } },
 			],
 		}).compile()
 
@@ -211,6 +213,19 @@ describe("ChatController", () => {
 			expect(forwarded.requestId).toMatch(/[0-9a-f-]{36}/)
 			expect(forwarded.traceId).toBe(forwarded.requestId)
 		})
+	})
+
+	describe("history endpoints (CH-3)", () => {
+		it.each(["listHistory", "getHistory"] as const)(
+			"requires chat.history.read on %s (own-scope enforced in the service)",
+			method => {
+				const required = Reflect.getMetadata(
+					REQUIRED_PERMISSIONS_KEY,
+					ChatController.prototype[method]
+				)
+				expect(required).toEqual(["chat.history.read"])
+			}
+		)
 	})
 
 	describe("streamQuery (GN-3 SSE)", () => {

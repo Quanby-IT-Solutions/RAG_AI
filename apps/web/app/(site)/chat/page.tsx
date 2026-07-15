@@ -8,12 +8,21 @@ export const metadata: Metadata = {
 	title: "Chat",
 }
 
-export default async function ChatPage() {
+export default async function ChatPage({
+	searchParams,
+}: Readonly<{ searchParams: Promise<{ c?: string }> }>) {
 	const access = await getAccess()
-	const hasAccess = canAccess(
-		{ roles: access.roles, permissions: access.permissions },
-		{ requiredPermission: "chat.query.submit" }
-	)
+	const grants = { roles: access.roles, permissions: access.permissions }
+	const hasAccess = canAccess(grants, { requiredPermission: "chat.query.submit" })
+	const hasHistoryAccess = canAccess(grants, { requiredPermission: "chat.history.read" })
+	// CH-3: /chat?c=<id> continues an existing conversation from history.
+	const { c } = await searchParams
 
-	return <ChatView hasAccess={hasAccess} />
+	return (
+		<ChatView
+			hasAccess={hasAccess}
+			hasHistoryAccess={hasHistoryAccess}
+			initialConversationId={c ?? null}
+		/>
+	)
 }

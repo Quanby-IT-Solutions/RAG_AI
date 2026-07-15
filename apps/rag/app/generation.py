@@ -63,6 +63,17 @@ VALIDATION_FAILED_ANSWER = (
     "withheld. Please try asking again."
 )
 
+
+class ConversationAccessError(Exception):
+    """CH-3 own-scope rule: the conversation exists but belongs to someone
+    else (or doesn't exist) — the endpoint returns 403/404 and the denial is
+    audited."""
+
+    def __init__(self, conversation_id: str, *, found: bool) -> None:
+        super().__init__(f"Conversation {conversation_id} is not accessible")
+        self.conversation_id = conversation_id
+        self.found = found
+
 # Grounded LCEL prompt (langchain-core ChatPromptTemplate): the model may use
 # ONLY the numbered context blocks, must cite them as [n], and must answer
 # exactly "I don't know." when the context is insufficient.
@@ -165,6 +176,27 @@ class GenerationService:
             )
         return citations
 
+    async def _assert_conversation_access(
+        self, conversation_id: str | None, principal: ServicePrincipal
+    ) -> None:
+        """CH-3 continue: appending requires OWNING the conversation. The
+        denial is audited before raising (Flow E)."""
+        if conversation_id is None:
+            return
+        owner = await self._repository.fetch_conversation_owner(conversation_id)
+        if owner == principal.sub:
+            return
+        await self._repository.write_audit(
+            actor_id=principal.sub,
+            actor_type=principal.actor_type,
+            action="chat.history.denied",
+            resource_type="conversation",
+            resource_id=conversation_id,
+            before=None,
+            after={"reason": "not-owner" if owner else "not-found"},
+        )
+        raise ConversationAccessError(conversation_id, found=owner is not None)
+
     async def _route(
         self, *, query: str, chunks: list[dict[str, Any]]
     ) -> tuple[Any, dict[str, Any]]:
@@ -232,10 +264,16 @@ class GenerationService:
 
     @traced(name="rag.chat")
     async def answer(
-        self, *, query: str, k: int | None, principal: ServicePrincipal
+        self,
+        *,
+        query: str,
+        k: int | None,
+        principal: ServicePrincipal,
+        conversation_id: str | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         trace_id = principal.trace_id or str(uuid.uuid4())
+        await self._assert_conversation_access(conversation_id, principal)
 
         prep = await self._prepare(query=query, k=k)
         chunks = prep["chunks"]
@@ -299,6 +337,7 @@ class GenerationService:
             token_usage=token_usage,
             trace_id=trace_id,
             model_used=client.model,
+            conversation_id=conversation_id,
         )
 
         is_i_dont_know = _is_i_dont_know(answer_text)
@@ -343,7 +382,12 @@ class GenerationService:
         }
 
     async def answer_stream(
-        self, *, query: str, k: int | None, principal: ServicePrincipal
+        self,
+        *,
+        query: str,
+        k: int | None,
+        principal: ServicePrincipal,
+        conversation_id: str | None = None,
     ) -> Any:
         """SSE mode (GN-3): yields `token` events as the provider streams,
         then ONE `final` event carrying citations, usage, ids, TTFT and
@@ -354,6 +398,7 @@ class GenerationService:
         degraded=true (never a silent hang)."""
         started = time.perf_counter()
         trace_id = principal.trace_id or str(uuid.uuid4())
+        await self._assert_conversation_access(conversation_id, principal)
 
         prep = await self._prepare(query=query, k=k)
         used_chunks = prep["used_chunks"]
@@ -432,6 +477,7 @@ class GenerationService:
             token_usage=token_usage,
             trace_id=trace_id,
             model_used=client.model,
+            conversation_id=conversation_id,
         )
 
         is_i_dont_know = _is_i_dont_know(answer_text)
@@ -507,6 +553,10 @@ def get_chat_client(request: Request) -> "ModelRouter | SingleClientRouter | Cha
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     k: int | None = Field(default=None, ge=1, le=50)
+    # CH-3: continue an existing conversation (must be owned by the caller).
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+
+    model_config = {"populate_by_name": True}
 
 
 @router.post("/chat")
@@ -525,7 +575,22 @@ async def chat(
         chat_client=chat_client,
         repository=repository,
     )
-    return await service.answer(query=payload.query, k=payload.k, principal=principal)
+    try:
+        return await service.answer(
+            query=payload.query,
+            k=payload.k,
+            principal=principal,
+            conversation_id=payload.conversation_id,
+        )
+    except ConversationAccessError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=403 if exc.found else 404,
+            detail="You do not have access to that conversation"
+            if exc.found
+            else "Conversation not found",
+        ) from exc
 
 
 @router.post("/chat/stream")
@@ -547,8 +612,27 @@ async def chat_stream(
         chat_client=chat_client,
         repository=repository,
     )
+    # Ownership is checked BEFORE the stream starts so a denial is a clean
+    # 403/404 response, not a broken SSE stream.
+    try:
+        await service._assert_conversation_access(payload.conversation_id, principal)
+    except ConversationAccessError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=403 if exc.found else 404,
+            detail="You do not have access to that conversation"
+            if exc.found
+            else "Conversation not found",
+        ) from exc
+
     return StreamingResponse(
-        service.answer_stream(query=payload.query, k=payload.k, principal=principal),
+        service.answer_stream(
+            query=payload.query,
+            k=payload.k,
+            principal=principal,
+            conversation_id=payload.conversation_id,
+        ),
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
     )

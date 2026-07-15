@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
 import { BubbleChatIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
@@ -20,6 +21,7 @@ import {
 	ChatStreamInterruptedError,
 	isPermissionError,
 	streamChatQuery,
+	useConversationQuery,
 } from "@/features/chat/api/chat.hooks"
 import { ChatComposer } from "@/features/chat/components/chat-composer"
 import { MessageBubble, type ChatThreadMessage } from "@/features/chat/components/message-bubble"
@@ -27,12 +29,24 @@ import { MessageBubble, type ChatThreadMessage } from "@/features/chat/component
 interface ChatViewProps {
 	/** Resolved server-side from getAccess (chat.query.submit). */
 	hasAccess: boolean
+	/** CH-3: user can open /chat/history (chat.history.read). */
+	hasHistoryAccess?: boolean
+	/** CH-3: continue an existing conversation (from /chat/history). */
+	initialConversationId?: string | null
 }
 
-export function ChatView({ hasAccess }: ChatViewProps) {
+export function ChatView({
+	hasAccess,
+	hasHistoryAccess = false,
+	initialConversationId = null,
+}: ChatViewProps) {
 	const [messages, setMessages] = useState<ChatThreadMessage[]>([])
 	const [input, setInput] = useState("")
 	const [isStreaming, setIsStreaming] = useState(false)
+	// CH-3: once a conversation exists, later sends continue it server-side.
+	const [conversationId, setConversationId] = useState<string | null>(initialConversationId)
+	const seededRef = useRef(false)
+	const { data: existingConversation } = useConversationQuery(initialConversationId)
 	const [requestError, setRequestError] = useState<Error | null>(null)
 	const [retryQuery, setRetryQuery] = useState<string | null>(null)
 	const nextIdRef = useRef(0)
@@ -46,6 +60,28 @@ export function ChatView({ hasAccess }: ChatViewProps) {
 	useEffect(() => {
 		threadEndRef.current?.scrollIntoView?.({ block: "end" })
 	}, [messages])
+
+	// CH-3: opening a past conversation loads its full thread (citations
+	// intact) so the user can pick up where they left off.
+	useEffect(() => {
+		if (!existingConversation || seededRef.current) return
+		seededRef.current = true
+		nextIdRef.current = existingConversation.messages.length
+		setMessages(
+			existingConversation.messages.map(message =>
+				message.role === "user"
+					? { id: message.id, role: "user" as const, content: message.content }
+					: {
+							id: message.id,
+							role: "assistant" as const,
+							content: message.content,
+							citations: message.citations ?? [],
+							isIDontKnow: false,
+							degraded: false,
+						}
+			)
+		)
+	}, [existingConversation])
 
 	// B3: the nav item is already hidden without chat.query.submit; direct
 	// navigation lands on this no-access state (the API would 403 anyway).
@@ -117,7 +153,7 @@ export function ChatView({ hasAccess }: ChatViewProps) {
 
 		try {
 			await streamChatQuery(
-				{ query },
+				{ query, conversationId: conversationId ?? undefined },
 				{
 					onToken: delta => {
 						ensureBubble()
@@ -131,6 +167,7 @@ export function ChatView({ hasAccess }: ChatViewProps) {
 					},
 					onFinal: final => {
 						ensureBubble()
+						setConversationId(final.conversationId)
 						patchMessage(assistantId, {
 							content: final.answer,
 							citations: final.citations,
@@ -207,6 +244,14 @@ export function ChatView({ hasAccess }: ChatViewProps) {
 				title="Chat"
 				description="Ask a question and get a cited answer from the indexed corpus."
 			/>
+
+			{hasHistoryAccess ? (
+				<p className="text-sm">
+					<Link href="/chat/history" className="text-primary underline-offset-4 hover:underline">
+						View conversation history
+					</Link>
+				</p>
+			) : null}
 
 			<div className="flex min-h-[50vh] flex-col gap-4">
 				<div className="flex-1 overflow-y-auto" aria-label="Conversation">

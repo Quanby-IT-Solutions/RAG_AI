@@ -1,6 +1,12 @@
 import { oc } from "@orpc/contract"
+import { z } from "zod"
 
-import { ChatAnswerSchema, ChatQueryInputSchema } from "./chat.schema.js"
+import {
+	ChatAnswerSchema,
+	ChatQueryInputSchema,
+	ConversationDetailSchema,
+	ConversationSummarySchema,
+} from "./chat.schema.js"
 
 /**
  * Chat contract (generation epic, GN-1).
@@ -23,5 +29,28 @@ export const chatContract = {
 			})
 			.input(ChatQueryInputSchema)
 			.output(ChatAnswerSchema),
+	},
+	history: {
+		list: oc
+			.route({
+				method: "GET",
+				path: "/chat/history",
+				summary: "List my conversations",
+				description:
+					"Conversations owned by the caller, newest first (CH-3). Requires chat.history.read (own-scope).",
+				tags: ["Chat"],
+			})
+			.output(z.array(ConversationSummarySchema)),
+		get: oc
+			.route({
+				method: "GET",
+				path: "/chat/history/{id}",
+				summary: "Get one of my conversations",
+				description:
+					"Full message thread with citations intact. Another user's conversation returns 403 and the denial is audited.",
+				tags: ["Chat"],
+			})
+			.input(z.object({ id: z.string().uuid() }))
+			.output(ConversationDetailSchema),
 	},
 }

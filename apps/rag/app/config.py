@@ -81,6 +81,9 @@ class Settings(BaseSettings):
         alias="ROUTING_MIN_TOP_SIMILARITY", default=0.2, ge=0, le=1
     )
 
+    # --- Chat history (CH-3) — retention window for the purge job ---
+    chat_retention_days: int = Field(alias="CHAT_RETENTION_DAYS", default=365, ge=1)
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)

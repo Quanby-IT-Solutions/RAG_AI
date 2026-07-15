@@ -19,7 +19,7 @@ import { StrictThrottle } from "@/shared/decorators/strict-throttle.decorator"
 
 import { CorpusService } from "./corpus.service"
 import { documentUploadOptions } from "./corpus.upload-options"
-import { RagGatewayService } from "./rag-gateway.service"
+import { RagGatewayService, toORPCError } from "./rag-gateway.service"
 
 /**
  * Corpus endpoints (Flow A, IN-1).
@@ -117,13 +117,15 @@ export class CorpusController {
 			const access = await this.rbacService.getUserAccess(session.user.id)
 			const correlationId = String(request.id ?? crypto.randomUUID())
 
-			await this.ragGatewayService.rerunJob({
-				jobId: input.id,
-				userId: session.user.id,
-				permissions: access.permissions,
-				requestId: correlationId,
-				traceId: correlationId,
-			})
+			await this.ragGatewayService
+				.rerunJob({
+					jobId: input.id,
+					userId: session.user.id,
+					permissions: access.permissions,
+					requestId: correlationId,
+					traceId: correlationId,
+				})
+				.catch(toORPCError)
 			return { id: input.id, status: "queued" as const }
 		})
 	}

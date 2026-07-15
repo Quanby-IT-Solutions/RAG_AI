@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from "@nestjs/common"
+import { Injectable } from "@nestjs/common"
+import { ORPCError } from "@orpc/server"
 import { desc, eq, sql } from "drizzle-orm"
 
 import type { CorpusDocumentMetadata, IngestionJobStats } from "@repo/contracts"
@@ -64,7 +65,7 @@ export class CorpusService {
 	async getJob(id: string) {
 		const [job] = await db.select().from(ingestionJobs).where(eq(ingestionJobs.id, id))
 		if (!job) {
-			throw new NotFoundException(`Ingestion job ${id} not found`)
+			throw new ORPCError("NOT_FOUND", { message: `Ingestion job ${id} not found` })
 		}
 
 		const documentRows = await db

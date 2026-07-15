@@ -15,9 +15,11 @@ the run aborted unexpectedly; partial failures land in stats.failures.
 import logging
 from typing import Any
 
+from arq import cron
 from arq.connections import RedisSettings
 
 from app.config import get_settings
+from app.conversations import ConversationsRepository
 from app.documents import DocumentsRepository
 from app.embeddings import EmbeddingsClient
 from app.indexing import index_document_content
@@ -110,6 +112,21 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
     return {"status": status, **stats}
 
 
+@traced(name="rag.retention_purge")
+async def purge_expired_conversations(ctx: dict[str, Any]) -> dict[str, Any]:
+    """CH-3 retention: nightly purge of conversations past the deployment
+    window (default 1 year — PRD). Messages cascade with the conversation."""
+    settings = ctx["settings"]
+    repository = ctx.get("conversations") or ConversationsRepository(settings)
+    purged = await repository.purge_expired(settings.chat_retention_days)
+    logger.info(
+        "retention.purged conversations=%s retention_days=%s",
+        purged,
+        settings.chat_retention_days,
+    )
+    return {"purged": purged, "retentionDays": settings.chat_retention_days}
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     init_tracing(settings)
@@ -136,6 +153,8 @@ class WorkerSettings:
     """`arq app.worker.WorkerSettings` — the worker process entrypoint."""
 
     functions = [process_ingestion_job]
+    # CH-3 retention purge, nightly at 03:10 (worker-local time).
+    cron_jobs = [cron(purge_expired_conversations, hour=3, minute=10)]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

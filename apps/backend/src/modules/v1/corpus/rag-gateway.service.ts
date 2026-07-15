@@ -5,6 +5,32 @@ import {
 	HttpException,
 	Injectable,
 } from "@nestjs/common"
+import { ORPCError } from "@orpc/server"
+
+/**
+ * Map an upstream HttpException onto the oRPC error vocabulary so oRPC
+ * handlers return the real status instead of a generic 500. Plain Nest
+ * routes keep throwing HttpException directly.
+ */
+export function toORPCError(error: unknown): never {
+	if (error instanceof HttpException) {
+		const status = error.getStatus()
+		const code =
+			status === 403
+				? ("FORBIDDEN" as const)
+				: status === 404
+					? ("NOT_FOUND" as const)
+					: status === 409
+						? ("CONFLICT" as const)
+						: status === 429
+							? ("TOO_MANY_REQUESTS" as const)
+							: status >= 400 && status < 500
+								? ("BAD_REQUEST" as const)
+								: ("INTERNAL_SERVER_ERROR" as const)
+		throw new ORPCError(code, { message: error.message })
+	}
+	throw error
+}
 
 import { env } from "@/config/env.config"
 
@@ -29,6 +55,8 @@ export interface IngestForwardInput {
 export interface ChatForwardInput {
 	query: string
 	k?: number
+	/** CH-3: continue an existing conversation the caller owns. */
+	conversationId?: string
 	userId: string
 	permissions: readonly string[]
 	requestId: string
@@ -119,7 +147,11 @@ export class RagGatewayService {
 				"content-type": "application/json",
 				"x-request-id": input.requestId,
 			},
-			body: JSON.stringify({ query: input.query, ...(input.k !== undefined && { k: input.k }) }),
+			body: JSON.stringify({
+				query: input.query,
+				...(input.k !== undefined && { k: input.k }),
+				...(input.conversationId !== undefined && { conversationId: input.conversationId }),
+			}),
 			failureMessage: "RAG chat failed",
 		})
 	}

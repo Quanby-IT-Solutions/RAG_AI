@@ -284,3 +284,21 @@ test.describe("chat streaming (GN-3/CH-2)", () => {
 		})
 	})
 })
+
+test.describe("conversation history (CH-3)", () => {
+	test("lists past conversations and opens one with its thread intact", async ({ page }) => {
+		await page.goto("/chat/history")
+		const table = page.getByRole("table", { name: "Your conversations" })
+		await expect(table).toBeVisible({ timeout: 30_000 })
+
+		const firstOpen = table.getByRole("link", { name: "Open" }).first()
+		await firstOpen.click()
+
+		// The chat page loads the saved thread (user + assistant bubbles).
+		await expect(page).toHaveURL(/\/chat\?c=/)
+		await expect(page.getByLabel("Conversation")).toBeVisible()
+		await expect(page.locator("[aria-label='Conversation'] .whitespace-pre-wrap").first()).toBeVisible({
+			timeout: 30_000,
+		})
+	})
+})
