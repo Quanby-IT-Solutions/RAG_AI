@@ -64,6 +64,11 @@ _SYSTEM_PROMPT = (
 _CITATION_MARKER = re.compile(r"\[(\d+)\]")
 
 
+def _sse(event: str, data: dict[str, Any]) -> str:
+    """One Server-Sent Events frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
 def build_grounded_prompt() -> Any:
     """The GN-1 grounded prompt as an LCEL ChatPromptTemplate."""
     from langchain_core.prompts import ChatPromptTemplate
@@ -142,6 +147,41 @@ class ChatClient:
         )
         return content, token_usage
 
+    async def stream(self, messages: list[dict[str, str]]) -> Any:
+        """Streamed chat completion (GN-3): yields text deltas, then a final
+        ("__usage__", token_usage) sentinel tuple. Creating the stream runs
+        under the hard timeout; the provider stream is closed on generator
+        close (client disconnect -> no orphaned spend)."""
+        stream = await with_hard_timeout(
+            self._openai().chat.completions.create(
+                model=self.model,
+                messages=messages,  # type: ignore[arg-type]
+                stream=True,
+                stream_options={"include_usage": True},
+            ),
+            seconds=self._settings.external_call_timeout_seconds,
+            operation="openai.chat.completions.stream",
+        )
+        token_usage: dict[str, int] | None = None
+        try:
+            async for chunk in stream:
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    token_usage = {
+                        "promptTokens": usage.prompt_tokens,
+                        "completionTokens": usage.completion_tokens,
+                        "totalTokens": usage.total_tokens,
+                    }
+                if chunk.choices:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
+        finally:
+            # Cancellation propagation: closing this generator closes the
+            # provider stream, aborting the completion server-side.
+            await stream.close()
+        yield ("__usage__", token_usage)
+
 
 class GenerationService:
     """Retrieve -> grounded prompt -> single-provider completion -> citations
@@ -187,14 +227,10 @@ class GenerationService:
             )
         return citations
 
-    @traced(name="rag.chat")
-    async def answer(
-        self, *, query: str, k: int | None, principal: ServicePrincipal
-    ) -> dict[str, Any]:
-        started = time.perf_counter()
-        trace_id = principal.trace_id or str(uuid.uuid4())
-
-        # Flow B steps 3-4 (RT-1/RT-2): hybrid retrieve, retrieved log.
+    async def _prepare(self, *, query: str, k: int | None) -> dict[str, Any]:
+        """Shared Flow B steps 3-5 for both response modes: hybrid retrieve
+        (RT-1/RT-2), hard token budget (GN-2, rank-then-select), grounded
+        prompt assembly. Returns everything the generate stage needs."""
         chunks = await self._retrieval.retrieve(query, k=k)
         retrieved_record = [
             {
@@ -205,10 +241,8 @@ class GenerationService:
             for chunk in chunks
         ]
 
-        # Flow B step 5 (GN-2): hard token budget — rank-then-select, whole
-        # chunks only, never over budget. The order (rank -> select) is
-        # contractual per §5.3. Budget is resolved per request so a config
-        # change applies without restart.
+        # Budget resolved per request so a config change applies without
+        # restart; the order (rank -> select) is contractual per §5.3.
         budget = current_context_budget(self._settings)
         used_chunks, selection = select_within_budget(chunks, budget=budget)
         used_record = [
@@ -228,6 +262,38 @@ class GenerationService:
             json.dumps({"stage": "used", **selection, "chunks": used_record}),
         )
 
+        messages: list[dict[str, str]] | None = None
+        if used_chunks:
+            prompt = build_grounded_prompt().format_messages(
+                context=_format_context(used_chunks), question=query
+            )
+            messages = [
+                {"role": "system" if m.type == "system" else "user", "content": m.content}
+                for m in prompt
+            ]
+        return {
+            "chunks": chunks,
+            "retrieved_record": retrieved_record,
+            "used_chunks": used_chunks,
+            "used_record": used_record,
+            "selection": selection,
+            "messages": messages,
+        }
+
+    @traced(name="rag.chat")
+    async def answer(
+        self, *, query: str, k: int | None, principal: ServicePrincipal
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        trace_id = principal.trace_id or str(uuid.uuid4())
+
+        prep = await self._prepare(query=query, k=k)
+        chunks = prep["chunks"]
+        retrieved_record = prep["retrieved_record"]
+        used_chunks = prep["used_chunks"]
+        used_record = prep["used_record"]
+        selection = prep["selection"]
+
         token_usage: dict[str, int] | None = None
         degraded = False
         if not used_chunks:
@@ -236,15 +302,8 @@ class GenerationService:
             answer_text = I_DONT_KNOW_ANSWER
             citations: list[dict[str, Any]] = []
         else:
-            prompt = build_grounded_prompt().format_messages(
-                context=_format_context(used_chunks), question=query
-            )
-            messages = [
-                {"role": "system" if m.type == "system" else "user", "content": m.content}
-                for m in prompt
-            ]
             try:
-                answer_text, token_usage = await self._chat_client.complete(messages)
+                answer_text, token_usage = await self._chat_client.complete(prep["messages"])
             except Exception as exc:
                 # Alternate B2: provider error/timeout -> bounded degradation,
                 # no silent failure; the trace records the failure path.
@@ -317,6 +376,126 @@ class GenerationService:
             "latencyMs": latency_ms,
         }
 
+    async def answer_stream(
+        self, *, query: str, k: int | None, principal: ServicePrincipal
+    ) -> Any:
+        """SSE mode (GN-3): yields `token` events as the provider streams,
+        then ONE `final` event carrying citations, usage, ids, TTFT and
+        latency. The persisted assistant message is exactly the streamed
+        text. Client disconnect cancels this generator, whose provider
+        stream closes in ChatClient.stream's finally — no orphaned spend.
+        A mid-stream provider failure ends in a `final` event with
+        degraded=true (never a silent hang)."""
+        started = time.perf_counter()
+        trace_id = principal.trace_id or str(uuid.uuid4())
+
+        prep = await self._prepare(query=query, k=k)
+        used_chunks = prep["used_chunks"]
+
+        token_usage: dict[str, int] | None = None
+        degraded = False
+        ttft_ms: float | None = None
+
+        if not used_chunks:
+            # Alternate B1: grounded refusal — streamed as one token event so
+            # clients render it like any other answer.
+            answer_text = I_DONT_KNOW_ANSWER
+            yield _sse("token", {"delta": answer_text})
+        else:
+            parts: list[str] = []
+            try:
+                # aclosing: when the CLIENT disconnects, closing this outer
+                # generator must aclose the provider stream too (its finally
+                # aborts the completion — no orphaned spend).
+                from contextlib import aclosing
+
+                async with aclosing(self._chat_client.stream(prep["messages"])) as stream:
+                    async for item in stream:
+                        if isinstance(item, tuple):  # ("__usage__", usage) sentinel
+                            token_usage = item[1]
+                            continue
+                        if ttft_ms is None:
+                            ttft_ms = round((time.perf_counter() - started) * 1000, 3)
+                            logger.info(
+                                "chat.stream_ttft %s",
+                                json.dumps({"ttftMs": ttft_ms, "model": self._chat_client.model}),
+                            )
+                        parts.append(item)
+                        yield _sse("token", {"delta": item})
+                answer_text = "".join(parts).strip()
+                if not answer_text:
+                    raise RuntimeError(
+                        f"OpenAI returned an empty stream (model={self._chat_client.model})"
+                    )
+            except Exception as exc:
+                # Alternate B2 mid-stream: bounded degradation on the final
+                # frame; the trace records the failure path.
+                logger.warning(
+                    "chat.stream_degraded model=%s reason=%s", self._chat_client.model, exc
+                )
+                answer_text = DEGRADED_ANSWER
+                degraded = True
+
+        if degraded or _is_i_dont_know(answer_text):
+            citations: list[dict[str, Any]] = []
+        else:
+            citations = await self._build_citations(answer_text, used_chunks)
+
+        conversation_id, message_id = await self._repository.persist_turn(
+            user_id=principal.sub,
+            query=query,
+            answer=answer_text,
+            citations=citations,
+            retrieved_chunks=prep["retrieved_record"],
+            used_chunks=prep["used_record"],
+            token_usage=token_usage,
+            trace_id=trace_id,
+            model_used=self._chat_client.model,
+        )
+
+        is_i_dont_know = _is_i_dont_know(answer_text)
+        latency_ms = round((time.perf_counter() - started) * 1000, 3)
+
+        await self._repository.write_audit(
+            actor_id=principal.sub,
+            actor_type=principal.actor_type,
+            action=AUDIT_ACTION_CHAT,
+            resource_type="conversation",
+            resource_id=conversation_id,
+            before=None,
+            after={
+                "messageId": message_id,
+                "model": self._chat_client.model,
+                "retrievedChunkCount": len(prep["chunks"]),
+                "usedChunkCount": len(used_chunks),
+                "contextTokens": prep["selection"]["contextTokens"],
+                "citationCount": len(citations),
+                "isIDontKnow": is_i_dont_know,
+                "degraded": degraded,
+                "streamed": True,
+                "ttftMs": ttft_ms,
+                "traceId": trace_id,
+            },
+        )
+
+        # Final frame: citations + usage + ids (GN-3 contract with CH-2).
+        yield _sse(
+            "final",
+            {
+                "answer": answer_text,
+                "citations": citations,
+                "conversationId": conversation_id,
+                "messageId": message_id,
+                "traceId": trace_id,
+                "model": self._chat_client.model,
+                "tokenUsage": token_usage,
+                "isIDontKnow": is_i_dont_know,
+                "degraded": degraded,
+                "ttftMs": ttft_ms,
+                "latencyMs": latency_ms,
+            },
+        )
+
 
 router = APIRouter(prefix="/internal", dependencies=[Depends(verify_service_jwt)])
 
@@ -350,6 +529,7 @@ async def chat(
     chat_client: Annotated[ChatClient, Depends(get_chat_client)],
     repository: Annotated[ConversationsRepository, Depends(get_conversations_repository)],
 ) -> dict[str, Any]:
+    """Non-streamed JSON mode — preserved for integrators (GN-3 AC)."""
     service = GenerationService(
         settings=request.app.state.settings,
         retrieval=retrieval,
@@ -357,3 +537,29 @@ async def chat(
         repository=repository,
     )
     return await service.answer(query=payload.query, k=payload.k, principal=principal)
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    payload: ChatRequest,
+    request: Request,
+    principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
+    retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    chat_client: Annotated[ChatClient, Depends(get_chat_client)],
+    repository: Annotated[ConversationsRepository, Depends(get_conversations_repository)],
+) -> Any:
+    """SSE mode (GN-3): `token` events then one `final` event. Client
+    disconnect cancels the generator, which closes the provider stream."""
+    from fastapi.responses import StreamingResponse
+
+    service = GenerationService(
+        settings=request.app.state.settings,
+        retrieval=retrieval,
+        chat_client=chat_client,
+        repository=repository,
+    )
+    return StreamingResponse(
+        service.answer_stream(query=payload.query, k=payload.k, principal=principal),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+    )

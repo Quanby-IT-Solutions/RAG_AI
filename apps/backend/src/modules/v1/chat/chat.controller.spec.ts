@@ -16,6 +16,20 @@ jest.mock("@orpc/nest", () => ({
 	Implement: () => () => undefined,
 }))
 
+// @repo/contracts pulls in @orpc/contract (ESM) which jest cannot transform;
+// only the runtime schema the controller uses needs a stand-in here.
+jest.mock("@repo/contracts", () => ({
+	ChatQueryInputSchema: {
+		safeParse: (value: unknown) => {
+			const body = value as { query?: unknown; k?: unknown } | null
+			if (typeof body?.query === "string" && body.query.length > 0) {
+				return { success: true, data: { query: body.query, k: body.k } }
+			}
+			return { success: false, error: { issues: [{ message: "query is required" }] } }
+		},
+	},
+}))
+
 jest.mock("@orpc/server", () => ({
 	implement: jest.fn(() => ({
 		handler: jest.fn((fn: (ctx: { input: typeof mockChatInput }) => unknown) =>
@@ -196,6 +210,26 @@ describe("ChatController", () => {
 			]
 			expect(forwarded.requestId).toMatch(/[0-9a-f-]{36}/)
 			expect(forwarded.traceId).toBe(forwarded.requestId)
+		})
+	})
+
+	describe("streamQuery (GN-3 SSE)", () => {
+		it("requires chat.query.submit on the stream route", () => {
+			const required = Reflect.getMetadata(
+				REQUIRED_PERMISSIONS_KEY,
+				ChatController.prototype.streamQuery
+			)
+			expect(required).toEqual(["chat.query.submit"])
+		})
+
+		it("rejects an invalid body with 400 before contacting the RAG service", async () => {
+			const session = { user: { id: "user-1" } } as never
+			const request = { id: "req-1" } as never
+			const response = { on: jest.fn() } as never
+
+			await expect(
+				controller.streamQuery({ nope: true }, session, request, response)
+			).rejects.toMatchObject({ status: 400 })
 		})
 	})
 })

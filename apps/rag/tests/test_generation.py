@@ -538,3 +538,157 @@ async def test_nothing_fits_budget_answers_i_dont_know_without_model_call(
     assert result["citations"] == []
     assert client.calls == []  # never exceeds the budget, never calls the model
     assert repository.turns[0]["used_chunks"] == []
+
+
+# ------------------------------------------------------- SSE streaming (GN-3)
+class FakeStreamingChatClient(FakeChatClient):
+    """Streams the configured answer in fixed-size deltas; records whether the
+    provider stream generator was closed (disconnect propagation)."""
+
+    def __init__(self, answer: str = "Streamed answer. [1]", *, fail_mid_stream: bool = False):
+        super().__init__(answer)
+        self.fail_mid_stream = fail_mid_stream
+        self.stream_closed = False
+
+    async def stream(self, messages):
+        self.calls.append(messages)
+        try:
+            deltas = [self.answer[i : i + 6] for i in range(0, len(self.answer), 6)]
+            for index, delta in enumerate(deltas):
+                if self.fail_mid_stream and index == 2:
+                    raise RuntimeError("provider dropped the stream")
+                yield delta
+            yield ("__usage__", {"promptTokens": 90, "completionTokens": 15, "totalTokens": 105})
+        finally:
+            self.stream_closed = True
+
+
+def parse_sse(raw: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in raw.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines())
+        events.append((lines["event"], json.loads(lines["data"])))
+    return events
+
+
+async def collect_stream(service, query="q") -> list[tuple[str, dict]]:
+    raw = ""
+    async for frame in service.answer_stream(query=query, k=None, principal=PRINCIPAL):
+        raw += frame
+    return parse_sse(raw)
+
+
+async def test_stream_yields_tokens_then_final_with_citations_and_usage(settings):
+    chunks = [make_chunk("Vacation is 20 days.", page=3, section="Benefits")]
+    client = FakeStreamingChatClient()
+    service, _, _, repository = make_service(settings, chunks=chunks, chat_client=client)
+
+    events = await collect_stream(service)
+
+    token_events = [data for name, data in events if name == "token"]
+    final_events = [data for name, data in events if name == "final"]
+    assert len(final_events) == 1
+    final = final_events[0]
+
+    # Progressive deltas reassemble to the final answer...
+    assert "".join(d["delta"] for d in token_events) == "Streamed answer. [1]"
+    assert final["answer"] == "Streamed answer. [1]"
+    # ...and the persisted assistant message matches the streamed content.
+    assert repository.turns[0]["answer"] == "Streamed answer. [1]"
+
+    # Final frame carries citations + usage + TTFT (GN-3 contract with CH-2).
+    assert final["citations"][0]["chunkId"] == chunks[0]["id"]
+    assert final["tokenUsage"] == {
+        "promptTokens": 90,
+        "completionTokens": 15,
+        "totalTokens": 105,
+    }
+    assert final["ttftMs"] is not None and final["ttftMs"] >= 0
+    assert final["degraded"] is False
+    # Audit records the streamed path + TTFT.
+    assert repository.audits[0]["after"]["streamed"] is True
+    assert repository.audits[0]["after"]["ttftMs"] == final["ttftMs"]
+
+
+async def test_stream_client_disconnect_closes_provider_stream_and_skips_persist(settings):
+    chunks = [make_chunk("content")]
+    client = FakeStreamingChatClient()
+    service, _, _, repository = make_service(settings, chunks=chunks, chat_client=client)
+
+    generator = service.answer_stream(query="q", k=None, principal=PRINCIPAL)
+    first = await generator.__anext__()
+    assert "token" in first
+    # Client disconnect: StreamingResponse closes the generator mid-flight.
+    await generator.aclose()
+
+    assert client.stream_closed is True  # provider stream cancelled — no orphaned spend
+    assert repository.turns == []  # incomplete turn is not persisted
+
+
+async def test_stream_mid_flight_provider_failure_ends_in_degraded_final(settings):
+    chunks = [make_chunk("content")]
+    client = FakeStreamingChatClient(fail_mid_stream=True)
+    service, _, _, repository = make_service(settings, chunks=chunks, chat_client=client)
+
+    events = await collect_stream(service)
+
+    final = [data for name, data in events if name == "final"][0]
+    assert final["degraded"] is True
+    assert final["citations"] == []
+    assert "unavailable" in final["answer"]
+    # Degraded outcome is persisted (honest record), flagged in the audit.
+    assert repository.turns[0]["answer"] == final["answer"]
+    assert repository.audits[0]["after"]["degraded"] is True
+
+
+async def test_stream_empty_retrieval_streams_grounded_refusal(settings):
+    service, _, client, repository = make_service(
+        settings, chunks=[], chat_client=FakeStreamingChatClient()
+    )
+
+    events = await collect_stream(service)
+
+    assert events[0] == ("token", {"delta": "I don't know."})
+    final = events[-1][1]
+    assert final["isIDontKnow"] is True
+    assert final["citations"] == []
+    assert client.calls == []  # model never invoked on empty retrieval
+    assert repository.turns[0]["answer"] == "I don't know."
+
+
+async def test_stream_endpoint_returns_sse_and_requires_service_jwt(settings):
+    """HTTP layer: /internal/chat/stream is SSE and JWT-protected; the
+    non-streamed /internal/chat JSON mode is preserved."""
+    app = create_app(settings)
+    chunks = [make_chunk("Vacation is 20 days.")]
+
+    class StreamRetrieval(FakeRetrievalService):
+        pass
+
+    retrieval = StreamRetrieval(chunks)
+    client = FakeStreamingChatClient()
+    repository = FakeConversationsRepository()
+    app.dependency_overrides[get_retrieval_service] = lambda: retrieval
+    app.dependency_overrides[get_chat_client] = lambda: client
+    app.dependency_overrides[get_conversations_repository] = lambda: repository
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as http:
+        unauthorized = await http.post("/internal/chat/stream", json={"query": "q"})
+        assert unauthorized.status_code == 401
+
+        async with http.stream(
+            "POST",
+            "/internal/chat/stream",
+            headers={"authorization": f"Bearer {make_token()}"},
+            json={"query": "how many vacation days?"},
+        ) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            raw = ""
+            async for chunk_text in response.aiter_text():
+                raw += chunk_text
+
+    events = parse_sse(raw)
+    assert events[-1][0] == "final"
+    assert any(name == "token" for name, _ in events)
