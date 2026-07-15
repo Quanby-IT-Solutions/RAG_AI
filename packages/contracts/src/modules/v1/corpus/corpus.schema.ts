@@ -47,6 +47,7 @@ export const IngestionJobStatsSchema = z
 		chunks: z.number().int().nonnegative().optional(),
 		embedBatches: z.number().int().nonnegative().optional(),
 		cacheHits: z.number().int().nonnegative().optional(),
+		cacheMisses: z.number().int().nonnegative().optional(),
 		failures: z
 			.array(
 				z.object({ documentId: z.string(), error: z.string().nullable() }).catchall(z.unknown())

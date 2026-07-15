@@ -266,7 +266,9 @@ test.describe("ingestion jobs console (IN-7)", () => {
 		// the worker finishes — no reload needed.
 		const row = page.getByRole("row").filter({ hasText: "e2e-job.csv" }).first()
 		await expect(row).toBeVisible({ timeout: 15_000 })
-		await expect(row.getByText("indexed")).toBeVisible({ timeout: 60_000 })
+		// Semantic chunking embeds sentences, so a job takes ~20s and the
+		// single worker processes the suite's uploads serially.
+		await expect(row.getByText("indexed")).toBeVisible({ timeout: 120_000 })
 	})
 })
 
@@ -460,7 +462,14 @@ test.describe("chunk-boundary inspection (IN-5)", () => {
 		await page.goto("/corpus")
 		await expect(page.getByRole("table").first()).toBeVisible({ timeout: 30_000 })
 
-		await page.getByRole("link", { name: /^Inspect chunks of / }).first().click()
+		// Inspect an INDEXED document — the newest row may still be processing
+		// (its chunks don't exist yet).
+		await page
+			.getByRole("row")
+			.filter({ hasText: "indexed" })
+			.first()
+			.getByRole("link", { name: /^Inspect chunks of / })
+			.click()
 		await expect(page.getByText("Chunk boundaries")).toBeVisible({ timeout: 30_000 })
 
 		const list = page.getByTestId("chunk-boundaries")

@@ -39,6 +39,7 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
     jobs = ctx.get("jobs") or JobsRepository(settings)
     repository = ctx.get("repository") or DocumentsRepository(settings)
     embeddings: EmbeddingsClient = ctx["embeddings"]
+    embedding_cache = ctx.get("embedding_cache")
 
     await jobs.mark_running(job_id)
     job = await jobs.fetch_job(job_id)
@@ -48,9 +49,9 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
         "documents": len(job_documents),
         "chunks": 0,
         "embedBatches": 0,
-        # IN-6 wires real cache-hit counters; the field exists so the console
-        # and RP-5 have a stable shape.
+        # IN-6: real cache counters — a no-change re-index shows 100% hits.
         "cacheHits": 0,
+        "cacheMisses": 0,
         "failures": [],
     }
 
@@ -76,6 +77,7 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             settings=settings,
             repository=repository,
             embeddings=embeddings,
+            embedding_cache=embedding_cache,
         )
         await jobs.set_document_outcome(
             job_id=job_id,
@@ -87,6 +89,8 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
         if outcome["status"] == "indexed":
             stats["chunks"] += outcome["chunkCount"] or 0
             stats["embedBatches"] += outcome["embedBatches"]
+            stats["cacheHits"] += outcome.get("cacheHits", 0)
+            stats["cacheMisses"] += outcome.get("cacheMisses", 0)
         else:
             stats["failures"].append(
                 {"documentId": entry["document_id"], "error": outcome["error"]}

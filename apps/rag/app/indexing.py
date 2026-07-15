@@ -12,6 +12,7 @@ from typing import Any
 from app.chunking import chunk_document
 from app.config import Settings
 from app.documents import DocumentsRepository
+from app.embedding_cache import EmbeddingCacheRepository, embed_with_cache
 from app.embeddings import EmbeddingsClient
 from app.tracing import traced
 
@@ -23,12 +24,13 @@ async def index_document_content(
     settings: Settings,
     repository: DocumentsRepository,
     embeddings: EmbeddingsClient,
+    embedding_cache: "EmbeddingCacheRepository | None" = None,
 ) -> dict[str, Any]:
     """Index one normalized document (text/pages live in its metadata jsonb).
 
     Returns an outcome dict:
       {status: indexed|failed, document, chunkCount, embedBatches,
-       chunking, error}
+       cacheHits, cacheMisses, chunking, error}
     """
     metadata = document.get("metadata") or {}
     text = metadata.get("text") or ""
@@ -76,9 +78,22 @@ async def index_document_content(
 
         vectors: list[list[float]] = []
         batches = 0
-        texts = [chunk.content for chunk in chunk_list] + [row["content"] for row in parents]
-        if texts:
-            vectors, batches = await embeddings.embed_texts(texts)
+        cache_stats = {"cacheHits": 0, "cacheMisses": 0}
+        # IN-6 Flow A cache branch: lookup-before-batch keyed on the chunk
+        # content hash — unchanged content never re-embeds.
+        items = [(chunk.content_hash, chunk.content) for chunk in chunk_list] + [
+            (row["content_hash"], row["content"]) for row in parents
+        ]
+        if items:
+            cache = embedding_cache or EmbeddingCacheRepository(settings)
+            vectors, embed_stats = await embed_with_cache(
+                embeddings=embeddings, cache=cache, items=items
+            )
+            batches = embed_stats["embedBatches"]
+            cache_stats = {
+                "cacheHits": embed_stats["cacheHits"],
+                "cacheMisses": embed_stats["cacheMisses"],
+            }
         rows = [
             {
                 "content": chunk.content,
@@ -117,6 +132,8 @@ async def index_document_content(
             "document": failed,
             "chunkCount": None,
             "embedBatches": 0,
+            "cacheHits": 0,
+            "cacheMisses": 0,
             "chunking": None,
             "error": reason,
         }
@@ -127,6 +144,8 @@ async def index_document_content(
         "document": indexed,
         "chunkCount": len(chunk_list),
         "embedBatches": batches,
+        "cacheHits": cache_stats["cacheHits"],
+        "cacheMisses": cache_stats["cacheMisses"],
         "chunking": chunking_meta,
         "error": None,
     }

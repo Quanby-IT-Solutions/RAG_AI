@@ -444,6 +444,23 @@ export const messages = createTable(
 	t => [index("messages_conversation_id_idx").on(t.conversationId)]
 )
 
+/**
+ * Embedding cache (IN-6, Flow A cache branch — PRD decision: Postgres, not
+ * Redis). Keyed on (content_hash, model): identical content is never
+ * re-embedded, and IN-8's new-model pass is safe by construction (a new
+ * model key is a clean namespace). Written/read by the Python RAG service.
+ */
+export const embeddingCache = createTable(
+	"embedding_cache",
+	t => ({
+		contentHash: t.text("content_hash").notNull(),
+		model: t.text("model").notNull(),
+		embedding: vector1536("embedding").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [primaryKey({ columns: [t.contentHash, t.model] })]
+)
+
 // ============================================================================
 // GOLDEN EVALUATION SET (evaluation — EV-1)
 // ============================================================================
@@ -610,6 +627,7 @@ export const schema = Object.assign(
 		messages,
 		goldenItems,
 		evalRuns,
+		embeddingCache,
 	},
 	relations
 )

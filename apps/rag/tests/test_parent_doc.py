@@ -8,6 +8,7 @@ from app.indexing import index_document_content
 from tests.conftest import REQUIRED_ENV
 from tests.test_ingest import FakeEmbeddingsClient
 from tests.test_retrieval import FakeChunksRepository, make_chunk_row
+from tests.test_worker import NullEmbeddingCache
 
 
 @pytest.fixture
@@ -61,6 +62,7 @@ async def test_parent_doc_mode_builds_linked_parents(settings):
         settings=config,
         repository=repository,
         embeddings=FakeEmbeddingsClient(),
+        embedding_cache=NullEmbeddingCache(),
     )
 
     assert outcome["status"] == "indexed"
@@ -102,6 +104,7 @@ async def test_parent_doc_off_emits_no_parent_rows(settings):
         settings=config,
         repository=repository,
         embeddings=FakeEmbeddingsClient(),
+        embedding_cache=NullEmbeddingCache(),
     )
 
     rows = repository.indexed["chunks"]

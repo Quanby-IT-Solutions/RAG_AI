@@ -77,6 +77,7 @@ export type IngestionJobUi = {
 		chunks?: number
 		embedBatches?: number
 		cacheHits?: number
+		cacheMisses?: number
 		failures?: { documentId: string; error: string | null }[]
 	} | null
 	error: string | null

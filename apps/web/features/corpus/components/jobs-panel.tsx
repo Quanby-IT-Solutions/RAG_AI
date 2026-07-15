@@ -61,7 +61,7 @@ function JobDetailRow({ jobId }: Readonly<{ jobId: string }>) {
 		<div className="flex flex-col gap-2 p-2">
 			<p className="text-muted-foreground text-xs">
 				{detail.stats
-					? `${detail.stats.chunks ?? 0} chunks · ${detail.stats.embedBatches ?? 0} embed batches · ${detail.stats.cacheHits ?? 0} cache hits · ${detail.stats.failures?.length ?? 0} failures`
+					? `${detail.stats.chunks ?? 0} chunks · ${detail.stats.embedBatches ?? 0} embed batches · ${detail.stats.cacheHits ?? 0} cache hits · ${detail.stats.cacheMisses ?? 0} misses · ${detail.stats.failures?.length ?? 0} failures`
 					: "No run stats yet — the job has not finished a pass."}
 			</p>
 			<Table aria-label="Documents in this job">

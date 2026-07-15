@@ -16,6 +16,19 @@ from app.worker import process_ingestion_job
 from tests.conftest import REQUIRED_ENV
 from tests.test_ingest import FakeEmbeddingsClient, FakeJobsRepository, FakeRepository
 
+
+class NullEmbeddingCache:
+    """IN-6 stub: nothing cached, stores are dropped (unit tests hit no DB)."""
+
+    def __init__(self):
+        self.stored: list[tuple[str, list[float]]] = []
+
+    async def fetch(self, *, model, hashes):
+        return {}
+
+    async def store(self, *, model, entries):
+        self.stored.extend(entries)
+
 TWO_PAGE_TEXTS = [
     "Employee handbook. " * 120,
     "Remote work policy. " * 40,
@@ -43,7 +56,14 @@ def embeddings() -> FakeEmbeddingsClient:
 
 
 def make_ctx(settings, repository, jobs, embeddings) -> dict[str, Any]:
-    return {"settings": settings, "repository": repository, "jobs": jobs, "embeddings": embeddings}
+    return {
+        "settings": settings,
+        "repository": repository,
+        "jobs": jobs,
+        "embeddings": embeddings,
+        # IN-6: pass-through cache stub (no DB) — every item is a miss.
+        "embedding_cache": NullEmbeddingCache(),
+    }
 
 
 def seed_document(repository: FakeRepository, *, text: str, pages=None) -> dict[str, Any]:
