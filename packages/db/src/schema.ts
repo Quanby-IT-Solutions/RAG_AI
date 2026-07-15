@@ -439,6 +439,41 @@ export const messages = createTable(
 )
 
 // ============================================================================
+// GOLDEN EVALUATION SET (evaluation — EV-1)
+// ============================================================================
+
+/**
+ * One golden evaluation item (DOMAIN-MODEL `golden_items`, §5.7): a curated
+ * question, the chunk(s) that SHOULD be retrieved, and the ideal answer.
+ * Everything downstream (EV-2/3 metrics, EV-4 gate, IN-8 verification) reads
+ * this. OWNED by the evaluation epic.
+ *
+ * Expected chunks bind by chunk CONTENT HASH (chunks.content_hash), which is
+ * stable across re-indexing of unchanged content. A re-chunking that orphans
+ * a hash makes the item STALE (validated on read, never silently pass/fail).
+ * Retirement is a status flip, not a delete — the row remains for audit.
+ */
+export const goldenItems = createTable(
+	"golden_items",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		question: t.text("question").notNull(),
+		idealAnswer: t.text("ideal_answer").notNull(),
+		// chunks.content_hash values expected in retrieval results.
+		expectedChunkHashes: t.jsonb("expected_chunk_hashes").$type<string[]>().notNull(),
+		tags: t.jsonb("tags").$type<string[]>().notNull().default([]),
+		status: t.text("status", { enum: ["active", "retired"] }).notNull().default("active"),
+		createdBy: t
+			.text("created_by")
+			.notNull()
+			.references(() => users.id, { onDelete: "restrict" }),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: t.timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("golden_items_status_idx").on(t.status)]
+)
+
+// ============================================================================
 // RELATIONS
 // ============================================================================
 export const relations = defineRelations(
@@ -538,6 +573,7 @@ export const schema = Object.assign(
 		jobDocuments,
 		conversations,
 		messages,
+		goldenItems,
 	},
 	relations
 )

@@ -1,5 +1,6 @@
 import {
 	BubbleChatIcon,
+	CheckmarkBadge01Icon,
 	DashboardSquare01Icon,
 	FolderLibraryIcon,
 	Key01Icon,
@@ -64,6 +65,15 @@ export const navItems: readonly DashboardNavItem[] = [
 		icon: UserMultipleIcon,
 		section: "Administration",
 		requiredPermission: ["users.accounts.manage", "users.roles.manage"],
+	},
+	{
+		// Golden evaluation set console (EV-1). Quality Analysts curate the
+		// questions/chunks/answers everything downstream (EV-2..4) reads.
+		label: "Evaluation",
+		href: "/eval",
+		icon: CheckmarkBadge01Icon,
+		section: "Administration",
+		requiredPermission: "eval.golden.manage",
 	},
 	{
 		// Integrator API keys console (SC-3). Keys act with the owner's

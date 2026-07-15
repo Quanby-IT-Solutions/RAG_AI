@@ -20,7 +20,7 @@ from app.timeouts import with_hard_timeout
 # Cosine similarity = 1 - cosine distance. ORDER BY the raw `<=>` distance so
 # the HNSW index (vector_cosine_ops) drives the scan; LIMIT applies top-k.
 _TOP_K_SQL = """
-SELECT id, document_id, content, metadata, chunk_index,
+SELECT id, document_id, content, metadata, chunk_index, content_hash,
        1 - (embedding <=> $1::vector) AS similarity
 FROM chunks
 ORDER BY embedding <=> $1::vector
@@ -32,7 +32,7 @@ LIMIT $2
 # safely (quoted phrases, OR, -exclusions) and never raises on odd input.
 # Fully DB-resident — no in-memory index to lose on replica restart.
 _KEYWORD_SQL = """
-SELECT id, document_id, content, metadata, chunk_index,
+SELECT id, document_id, content, metadata, chunk_index, content_hash,
        ts_rank_cd(tsv, websearch_to_tsquery('english', $1)) AS rank
 FROM chunks
 WHERE tsv @@ websearch_to_tsquery('english', $1)
@@ -49,6 +49,9 @@ def _row_to_chunk(row: Any) -> dict[str, Any]:
         "content": row["content"],
         "metadata": json.loads(metadata) if isinstance(metadata, str) else metadata,
         "chunk_index": row["chunk_index"],
+        # EV-1: expected-chunk binding key — stable across re-indexing of
+        # unchanged content (doc-scoped chunk hash, IN-2).
+        "content_hash": row["content_hash"],
         "similarity": float(row["similarity"]),
     }
 

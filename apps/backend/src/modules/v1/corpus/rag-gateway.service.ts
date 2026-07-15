@@ -185,6 +185,40 @@ export class RagGatewayService {
 		})
 	}
 
+	/**
+	 * Run the REAL hybrid retrieval pipeline (EV-1 chunk picker, EV-2 harness):
+	 * POST {RAG_SERVICE_URL}/internal/retrieve. Returns fused top-k chunks
+	 * including each chunk's content hash (the golden-set binding key).
+	 */
+	async retrieveChunks(input: {
+		query: string
+		k?: number
+		userId: string
+		permissions: readonly string[]
+		requestId: string
+		traceId: string
+	}): Promise<unknown> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: input.permissions,
+			requestId: input.requestId,
+			traceId: input.traceId,
+		})
+
+		return this.forward("/internal/retrieve", {
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+				"x-request-id": input.requestId,
+			},
+			body: JSON.stringify({
+				query: input.query,
+				...(input.k !== undefined && { k: input.k }),
+			}),
+			failureMessage: "RAG retrieval failed",
+		})
+	}
+
 	/** Shared POST transport: hard timeout + uniform error mapping. */
 	private async forward(
 		path: string,

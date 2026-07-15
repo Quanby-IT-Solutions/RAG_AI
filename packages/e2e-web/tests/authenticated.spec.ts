@@ -377,3 +377,36 @@ test.describe("API keys console (SC-3)", () => {
 		await expect(row.getByText("Revoked")).toBeVisible({ timeout: 15_000 })
 	})
 })
+
+test.describe("golden evaluation set console (EV-1)", () => {
+	test("picks chunks via live retrieval, adds an item, and retires it", async ({
+		page,
+	}, testInfo) => {
+		const question = `e2e golden ${testInfo.project.name}-${Date.now()}?`
+
+		await page.goto("/eval")
+		const form = page.getByRole("form", { name: "Add golden item" })
+		await expect(form).toBeVisible({ timeout: 15_000 })
+
+		await form.getByLabel("Question").fill(question)
+		await form.getByLabel("Ideal answer").fill("Meals are reimbursed up to forty dollars.")
+
+		// The chunk picker runs the REAL retrieval pipeline and returns
+		// hash-bound candidates.
+		await form.getByLabel("Retrieval query").fill("expense policy")
+		await form.getByRole("button", { name: "Run retrieval" }).click()
+		const candidates = page.getByTestId("chunk-candidates")
+		await expect(candidates).toBeVisible({ timeout: 30_000 })
+		await candidates.locator("li").first().getByRole("checkbox").click()
+		await expect(page.getByText(/1 chunk\(s\) selected/)).toBeVisible()
+
+		await form.getByRole("button", { name: "Add item" }).click()
+
+		const row = page.getByRole("row").filter({ hasText: question.slice(0, 60) })
+		await expect(row).toBeVisible({ timeout: 30_000 })
+		await expect(row.getByText("active", { exact: true })).toBeVisible()
+
+		await row.getByRole("button", { name: /^Retire / }).click()
+		await expect(row.getByText("retired", { exact: true })).toBeVisible({ timeout: 15_000 })
+	})
+})

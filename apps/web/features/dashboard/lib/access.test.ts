@@ -161,6 +161,7 @@ describe("navItems", () => {
 		"Corpus",
 		"Chat",
 		"User Management",
+		"Evaluation",
 		"API Keys",
 	])
 	})

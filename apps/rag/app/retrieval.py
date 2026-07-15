@@ -12,21 +12,25 @@ The retrieved chunk ids/scores are logged per request. "Retrieved" chunks are
 DISTINCT from the "used in prompt" chunks GN-2 logs later — this record is
 retrieval-only.
 
-No HTTP surface here: GN-1's /chat path calls this service in-process
-(get_retrieval_service is the FastAPI dependency seam).
+GN-1's /chat path calls this service in-process (get_retrieval_service is
+the FastAPI dependency seam). EV-1 adds ONE thin HTTP surface —
+POST /internal/retrieve — so the golden-set console (and the EV-2 harness)
+can run the REAL retrieval pipeline, not a reimplementation.
 """
 
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import Request
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 
 from app.chunks import ChunksRepository
 from app.config import Settings
 from app.embeddings import EmbeddingsClient
 from app.ingest import get_embeddings_client
+from app.security import verify_service_jwt
 from app.tracing import traced
 
 logger = logging.getLogger(__name__)
@@ -160,3 +164,35 @@ def get_retrieval_service(request: Request) -> RetrievalService:
         embeddings=get_embeddings_client(request),
         repository=get_chunks_repository(request),
     )
+
+
+router = APIRouter(prefix="/internal", dependencies=[Depends(verify_service_jwt)])
+
+
+class RetrieveRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    k: int | None = Field(default=None, ge=1, le=50)
+
+
+@router.post("/retrieve")
+async def retrieve_endpoint(
+    payload: RetrieveRequest,
+    retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+) -> dict[str, Any]:
+    """Run the real hybrid retrieval pipeline (EV-1 chunk picker, EV-2 harness).
+
+    Returns the fused top-k chunks including each chunk's content_hash — the
+    stable binding key golden items store."""
+    chunks = await retrieval.retrieve(payload.query, k=payload.k)
+    return {
+        "chunks": [
+            {
+                "id": chunk["id"],
+                "documentId": chunk["document_id"],
+                "contentHash": chunk["content_hash"],
+                "content": chunk["content"],
+                "score": chunk.get("rrf_score") or chunk.get("similarity"),
+            }
+            for chunk in chunks
+        ]
+    }

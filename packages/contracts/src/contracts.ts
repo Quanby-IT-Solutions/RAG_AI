@@ -108,6 +108,27 @@ export type {
 	CreateApiKeyResponse,
 } from "./modules/v1/apikeys/apikeys.schema.js"
 
+// Golden evaluation set (evaluation, EV-1) contract + schemas
+export { evalContract } from "./modules/v1/eval/eval.contract.js"
+export {
+	GoldenItemSchema,
+	GoldenItemStatusSchema,
+	CreateGoldenItemRequestSchema,
+	UpdateGoldenItemRequestSchema,
+	GoldenSetExportSchema,
+	GoldenChunkSearchRequestSchema,
+	GoldenChunkCandidateSchema,
+} from "./modules/v1/eval/eval.schema.js"
+export type {
+	GoldenItem,
+	GoldenItemStatus,
+	CreateGoldenItemRequest,
+	UpdateGoldenItemRequest,
+	GoldenSetExport,
+	GoldenChunkSearchRequest,
+	GoldenChunkCandidate,
+} from "./modules/v1/eval/eval.schema.js"
+
 // Current-user access schemas
 export { meContract } from "./modules/v1/me/me.contract.js"
 export { MePermissionsSchema } from "./modules/v1/me/me.schema.js"

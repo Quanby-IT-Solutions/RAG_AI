@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 
-from app import generation, ingest
+from app import generation, ingest, retrieval
 from app import health as health_checks
 from app.config import Settings, get_settings
 from app.documents import DocumentsRepository
@@ -64,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # /internal/* route is protected by the service-JWT dependency.
     app.include_router(ingest.router)
     app.include_router(generation.router)
+    app.include_router(retrieval.router)
 
     @app.get("/health")
     async def health(response: Response) -> dict:

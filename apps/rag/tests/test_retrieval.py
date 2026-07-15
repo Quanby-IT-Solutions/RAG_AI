@@ -32,6 +32,7 @@ def make_chunk_row(similarity: float, chunk_index: int = 0) -> dict[str, Any]:
         "content": f"chunk at similarity {similarity}",
         "metadata": {"page": chunk_index},
         "chunk_index": chunk_index,
+        "content_hash": f"hash-{similarity}-{chunk_index}",
         "similarity": similarity,
     }
 
@@ -111,6 +112,7 @@ async def test_top_k_rows_returned_in_similarity_order_with_scores(settings):
             "content",
             "metadata",
             "chunk_index",
+            "content_hash",
             "similarity",
             "rrf_score",
             "arm_ranks",
@@ -388,3 +390,72 @@ async def test_repository_keyword_search_uses_websearch_tsquery(settings, monkey
     assert fetch[2] == ("exact term", 7)
     assert result[0]["metadata"] == {"section": "rows 1-2"}
     assert result[0]["similarity"] == pytest.approx(0.42)
+
+
+# ------------------------------------------------- /internal/retrieve (EV-1)
+@pytest.fixture
+def retrieve_app(settings):
+    from app.main import create_app
+    from app.retrieval import get_retrieval_service
+
+    application = create_app(settings)
+
+    class FakeRetrieval:
+        def __init__(self):
+            self.calls = []
+
+        async def retrieve(self, query, *, k=None):
+            self.calls.append({"query": query, "k": k})
+            return [
+                {
+                    "id": "c1",
+                    "document_id": "d1",
+                    "content": "Vacation is 20 days.",
+                    "metadata": {},
+                    "chunk_index": 0,
+                    "content_hash": "hash-1",
+                    "similarity": 0.9,
+                    "rrf_score": 0.03,
+                    "arm_ranks": {0: 1},
+                }
+            ]
+
+    fake = FakeRetrieval()
+    application.dependency_overrides[get_retrieval_service] = lambda: fake
+    return application, fake
+
+
+async def _post_retrieve(app, *, token, json):
+    import httpx
+
+    headers = {"authorization": f"Bearer {token}"} if token else {}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        return await client.post("/internal/retrieve", headers=headers, json=json)
+
+
+async def test_retrieve_endpoint_requires_service_jwt(retrieve_app):
+    app, _ = retrieve_app
+    response = await _post_retrieve(app, token=None, json={"query": "vacation"})
+    assert response.status_code == 401
+
+
+async def test_retrieve_endpoint_returns_chunks_with_content_hash(retrieve_app):
+    from tests.test_ingest import make_token
+
+    app, fake = retrieve_app
+    response = await _post_retrieve(
+        app, token=make_token(), json={"query": "vacation", "k": 5}
+    )
+
+    assert response.status_code == 200
+    chunk = response.json()["chunks"][0]
+    # content_hash is the golden-set binding key (stable across re-index).
+    assert chunk == {
+        "id": "c1",
+        "documentId": "d1",
+        "contentHash": "hash-1",
+        "content": "Vacation is 20 days.",
+        "score": 0.03,
+    }
+    assert fake.calls == [{"query": "vacation", "k": 5}]
