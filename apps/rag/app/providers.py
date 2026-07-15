@@ -54,7 +54,7 @@ class OpenAIChatClient:
         if self._client is None:
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(api_key=self._settings.openai_api_key)
+            self._client = AsyncOpenAI(api_key=self._settings.openai_api_key.get_secret_value())
         return self._client
 
     async def complete(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int] | None]:
@@ -143,7 +143,9 @@ class AnthropicChatClient:
         if self._client is None:
             from anthropic import AsyncAnthropic
 
-            self._client = AsyncAnthropic(api_key=self._settings.anthropic_api_key)
+            api_key = self._settings.anthropic_api_key
+            assert api_key is not None
+            self._client = AsyncAnthropic(api_key=api_key.get_secret_value())
         return self._client
 
     @staticmethod

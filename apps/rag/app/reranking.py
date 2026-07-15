@@ -44,10 +44,12 @@ class CohereReranker:
         self.provider = "cohere"
 
     async def rerank(self, query: str, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        api_key = self._settings.cohere_api_key
+        assert api_key is not None
         async with httpx.AsyncClient(timeout=self._settings.rerank_timeout_seconds) as client:
             response = await client.post(
                 "https://api.cohere.com/v2/rerank",
-                headers={"authorization": f"Bearer {self._settings.cohere_api_key}"},
+                headers={"authorization": f"Bearer {api_key.get_secret_value()}"},
                 json={
                     "model": self.model,
                     "query": query,

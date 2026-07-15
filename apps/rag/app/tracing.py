@@ -27,7 +27,11 @@ def init_tracing(settings: Settings) -> None:
     if settings.tracing_provider == "langsmith":
         # The langsmith SDK is driven by env vars; pin them from validated settings.
         os.environ["LANGSMITH_TRACING"] = "true"
-        os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key or ""
+        os.environ["LANGSMITH_API_KEY"] = (
+            settings.langsmith_api_key.get_secret_value()
+            if settings.langsmith_api_key
+            else ""
+        )
         os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
         os.environ["LANGSMITH_ENDPOINT"] = settings.langsmith_endpoint
         logger.info(
@@ -40,7 +44,9 @@ def init_tracing(settings: Settings) -> None:
 
         _langfuse_client = Langfuse(
             public_key=settings.langfuse_public_key,
-            secret_key=settings.langfuse_secret_key,
+            secret_key=settings.langfuse_secret_key.get_secret_value()
+            if settings.langfuse_secret_key
+            else None,
             host=settings.langfuse_host,
         )
         logger.info("Tracing initialized: langfuse (host=%s)", settings.langfuse_host)

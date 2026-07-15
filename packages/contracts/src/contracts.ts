@@ -152,6 +152,10 @@ export type {
 	PromoteBaselineRequest,
 } from "./modules/v1/eval/eval.schema.js"
 
+// Ops console (OB-5)
+export { opsContract, ConfigEntrySchema, EffectiveConfigSchema } from "./modules/v1/ops/ops.contract.js"
+export type { ConfigEntry, EffectiveConfig } from "./modules/v1/ops/ops.contract.js"
+
 // Current-user access schemas
 export { meContract } from "./modules/v1/me/me.contract.js"
 export { MePermissionsSchema } from "./modules/v1/me/me.schema.js"

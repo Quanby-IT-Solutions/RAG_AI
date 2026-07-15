@@ -34,7 +34,7 @@ class EmbeddingsClient:
         if self._client is None:
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(api_key=self._settings.openai_api_key)
+            self._client = AsyncOpenAI(api_key=self._settings.openai_api_key.get_secret_value())
         return self._client
 
     async def embed_texts(self, texts: list[str]) -> tuple[list[list[float]], int]:

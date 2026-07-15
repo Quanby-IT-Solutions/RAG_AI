@@ -34,7 +34,7 @@ def principal_key(request: Request) -> str:
         try:
             payload = jwt.decode(
                 token,
-                settings.rag_service_token_secret,
+                settings.rag_service_token_secret.get_secret_value(),
                 algorithms=["HS256"],
                 options={"require": ["exp", "sub"]},
             )

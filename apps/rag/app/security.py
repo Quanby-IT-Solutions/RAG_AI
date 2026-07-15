@@ -34,7 +34,7 @@ def verify_service_jwt(request: Request) -> ServicePrincipal:
     try:
         payload = jwt.decode(
             token,
-            settings.rag_service_token_secret,
+            settings.rag_service_token_secret.get_secret_value(),
             algorithms=["HS256"],
             options={"require": ["exp", "sub"]},
         )

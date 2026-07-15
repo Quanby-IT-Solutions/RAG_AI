@@ -8,7 +8,7 @@ the fail-fast intent of apps/backend/src/config/env.config.ts.
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # D1 — pinned embedding constants. Single source of truth for both index (IN-2)
@@ -29,14 +29,16 @@ class Settings(BaseSettings):
     redis_url: str = Field(alias="REDIS_URL", min_length=1)
 
     # --- Providers / secrets (required) ---
-    openai_api_key: str = Field(alias="OPENAI_API_KEY", min_length=1)
-    rag_service_token_secret: str = Field(alias="RAG_SERVICE_TOKEN_SECRET", min_length=1)
+    openai_api_key: SecretStr = Field(alias="OPENAI_API_KEY", min_length=1)
+    rag_service_token_secret: SecretStr = Field(
+        alias="RAG_SERVICE_TOKEN_SECRET", min_length=1
+    )
 
     # --- Tracing (LangSmith default, Langfuse optional) ---
     tracing_provider: Literal["langsmith", "langfuse"] = Field(
         alias="TRACING_PROVIDER", default="langsmith"
     )
-    langsmith_api_key: str | None = Field(alias="LANGSMITH_API_KEY", default=None)
+    langsmith_api_key: SecretStr | None = Field(alias="LANGSMITH_API_KEY", default=None)
     langsmith_project: str = Field(alias="LANGSMITH_PROJECT", default="ragp")
     # Region-specific API host: US (default), EU https://eu.api.smith.langchain.com,
     # APAC https://apac.api.smith.langchain.com
@@ -44,7 +46,7 @@ class Settings(BaseSettings):
         alias="LANGSMITH_ENDPOINT", default="https://api.smith.langchain.com"
     )
     langfuse_public_key: str | None = Field(alias="LANGFUSE_PUBLIC_KEY", default=None)
-    langfuse_secret_key: str | None = Field(alias="LANGFUSE_SECRET_KEY", default=None)
+    langfuse_secret_key: SecretStr | None = Field(alias="LANGFUSE_SECRET_KEY", default=None)
     langfuse_host: str = Field(alias="LANGFUSE_HOST", default="https://cloud.langfuse.com")
 
     # --- Embedding constants (D1) — pinned; overriding to another value is invalid ---
@@ -65,7 +67,7 @@ class Settings(BaseSettings):
     # --- Model routing (GN-4) — cheap-fast vs strong across two providers.
     # Strong tier defaults to Anthropic; without ANTHROPIC_API_KEY the router
     # degrades to cheap-only (decision records "strong-unavailable").
-    anthropic_api_key: str | None = Field(alias="ANTHROPIC_API_KEY", default=None)
+    anthropic_api_key: SecretStr | None = Field(alias="ANTHROPIC_API_KEY", default=None)
     strong_model: str = Field(alias="STRONG_MODEL", default="claude-opus-4-8", min_length=1)
     strong_model_provider: Literal["openai", "anthropic"] = Field(
         alias="STRONG_MODEL_PROVIDER", default="anthropic"
@@ -205,7 +207,7 @@ class Settings(BaseSettings):
     rerank_window: int = Field(alias="RERANK_WINDOW", default=20, ge=1, le=50)
     rerank_model: str = Field(alias="RERANK_MODEL", default="rerank-english-v3.0")
     rerank_timeout_seconds: float = Field(alias="RERANK_TIMEOUT_SECONDS", default=10.0, gt=0)
-    cohere_api_key: str | None = Field(alias="COHERE_API_KEY", default=None)
+    cohere_api_key: SecretStr | None = Field(alias="COHERE_API_KEY", default=None)
 
     # --- Multi-query + MMR (RT-5) — both OFF by default pending eval evidence;
     # the toggles are independent (Flow B optional stages).

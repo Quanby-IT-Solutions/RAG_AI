@@ -215,3 +215,51 @@ async def test_draining_flag_sheds_and_fails_readiness(settings):
             json={"query": "q"},
         )
         assert shed.status_code == 503
+
+
+# ------------------------------------------------------------ OB-5 config
+async def test_config_endpoint_masks_every_secret_by_type(settings):
+    import httpx
+
+    from app.main import create_app
+    from tests.test_ingest import make_token
+
+    secret_values = {
+        "OPENAI_API_KEY": "sk-super-secret-openai",
+        "RAG_SERVICE_TOKEN_SECRET": "test-service-secret",
+        "ANTHROPIC_API_KEY": "sk-ant-super-secret",
+        "COHERE_API_KEY": "co-super-secret",
+        "LANGSMITH_API_KEY": "ls-super-secret",
+        "DATABASE_URL": "postgres://postgres:dbpassword@localhost:5432/turbo-template",
+    }
+    app = create_app(settings(**secret_values))
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        unauthorized = await client.get("/internal/config")
+        assert unauthorized.status_code == 401
+
+        response = await client.get(
+            "/internal/config", headers={"authorization": f"Bearer {make_token()}"}
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    # Response-shape AC: NO unmasked secret ever leaves the server.
+    for value in ("sk-super-secret-openai", "sk-ant-super-secret",
+                  "co-super-secret", "ls-super-secret", "dbpassword",
+                  "test-service-secret"):
+        assert value not in body
+
+    payload = response.json()
+    groups = payload["groups"]
+    # Grouped by module with secret-typed fields flagged + masked.
+    providers = {entry["key"]: entry for entry in groups["providers"]}
+    assert providers["openai_api_key"]["secret"] is True
+    assert providers["openai_api_key"]["value"] == "••••••••"
+    retrieval_keys = {entry["key"] for entry in groups["retrieval"]}
+    assert "retrieval_vector_weight" in retrieval_keys
+    caching_keys = {entry["key"] for entry in groups["caching"]}
+    assert "cache_ttl_seconds" in caching_keys
+    infra = {entry["key"]: entry for entry in groups["infrastructure"]}
+    assert "dbpassword" not in infra["database_url"]["value"]

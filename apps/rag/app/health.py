@@ -74,7 +74,7 @@ async def check_providers(settings: Settings) -> dict[str, str]:
         (
             "openai",
             "https://api.openai.com/v1/models",
-            {"authorization": f"Bearer {settings.openai_api_key}"},
+            {"authorization": f"Bearer {settings.openai_api_key.get_secret_value()}"},
         )
     ]
     if settings.anthropic_api_key:
@@ -83,7 +83,7 @@ async def check_providers(settings: Settings) -> dict[str, str]:
                 "anthropic",
                 "https://api.anthropic.com/v1/models",
                 {
-                    "x-api-key": settings.anthropic_api_key,
+                    "x-api-key": settings.anthropic_api_key.get_secret_value(),
                     "anthropic-version": "2023-06-01",
                 },
             )

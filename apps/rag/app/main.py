@@ -8,7 +8,7 @@ initialized at startup; `/health` performs real DB + Redis checks.
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 
 from app import evaluation, generation, ingest, retrieval
 from app import health as health_checks
@@ -104,6 +104,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     drain.install()
     app.state.drain = drain
     app.add_middleware(LoadShedMiddleware, settings=settings, drain=drain)
+
+    @app.get("/internal/config")
+    async def internal_config(request: Request) -> dict:
+        """OB-5: effective configuration, secrets masked BY TYPE (read-only).
+        Gateway-gated by ops.config.view; the service JWT is verified here."""
+        from app.config_view import effective_config
+        from app.security import verify_service_jwt
+
+        verify_service_jwt(request)
+        return effective_config(settings)
 
     @app.get("/metrics")
     async def metrics() -> Response:

@@ -483,3 +483,15 @@ test.describe("chunk-boundary inspection (IN-5)", () => {
 		await expect(items.first().getByText(/\d+ chars/)).toBeVisible()
 	})
 })
+
+test.describe("configuration review (OB-5)", () => {
+	test("renders grouped effective config with masked secrets", async ({ page }) => {
+		await page.goto("/ops-config")
+		await expect(page.getByText("Effective configuration")).toBeVisible({ timeout: 15_000 })
+		await expect(page.getByTestId("config-group-providers")).toBeVisible({ timeout: 30_000 })
+		await expect(page.getByTestId("config-group-retrieval")).toBeVisible()
+		const providers = page.getByTestId("config-group-providers")
+		await expect(providers.getByRole("cell", { name: "openai_api_key", exact: true })).toBeVisible()
+		await expect(providers.getByText("masked").first()).toBeVisible()
+	})
+})

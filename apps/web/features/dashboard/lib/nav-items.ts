@@ -4,6 +4,7 @@ import {
 	DashboardSquare01Icon,
 	FolderLibraryIcon,
 	Key01Icon,
+	Settings02Icon,
 	Task01Icon,
 	Ticket01Icon,
 	UserMultipleIcon,
@@ -74,6 +75,14 @@ export const navItems: readonly DashboardNavItem[] = [
 		icon: CheckmarkBadge01Icon,
 		section: "Administration",
 		requiredPermission: ["eval.golden.manage", "eval.runs.execute"],
+	},
+	{
+		// OB-5: read-only effective-config review (secrets masked server-side).
+		label: "Configuration",
+		href: "/ops-config",
+		icon: Settings02Icon,
+		section: "Administration",
+		requiredPermission: "ops.config.view",
 	},
 	{
 		// Integrator API keys console (SC-3). Keys act with the owner's

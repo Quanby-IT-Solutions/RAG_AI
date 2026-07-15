@@ -263,15 +263,46 @@ export class RagGatewayService {
 		})
 	}
 
-	/** Shared POST transport: hard timeout + uniform error mapping. */
+	/**
+	 * OB-5: effective configuration (read-only; secrets masked SERVER-side
+	 * in the Python service): GET {RAG_SERVICE_URL}/internal/config.
+	 */
+	async fetchConfig(input: {
+		userId: string
+		permissions: readonly string[]
+		requestId: string
+		traceId: string
+	}): Promise<unknown> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: input.permissions,
+			requestId: input.requestId,
+			traceId: input.traceId,
+		})
+		return this.forward("/internal/config", {
+			method: "GET",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"x-request-id": input.requestId,
+			},
+			failureMessage: "RAG config fetch failed",
+		})
+	}
+
+	/** Shared transport: hard timeout + uniform error mapping. */
 	private async forward(
 		path: string,
-		options: { headers: Record<string, string>; body: FormData | string; failureMessage: string }
+		options: {
+			headers: Record<string, string>
+			body?: FormData | string
+			method?: "GET" | "POST"
+			failureMessage: string
+		}
 	): Promise<unknown> {
 		let response: Response
 		try {
 			response = await fetch(`${env.RAG_SERVICE_URL}${path}`, {
-				method: "POST",
+				method: options.method ?? "POST",
 				headers: options.headers,
 				body: options.body,
 				signal: AbortSignal.timeout(env.RAG_SERVICE_TIMEOUT_MS),
