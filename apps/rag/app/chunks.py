@@ -120,6 +120,11 @@ def _row_to_chunk(row: Any) -> dict[str, Any]:
     }
 
 
+_EMBEDDINGS_SQL = """
+SELECT id, embedding FROM chunks WHERE id = ANY($1::uuid[])
+"""
+
+
 class ChunksRepository:
     """Read-only similarity search over `chunks` (ingestion owns writes)."""
 
@@ -188,3 +193,19 @@ class ChunksRepository:
             chunk = _row_to_chunk({**dict(row), "similarity": row["rank"]})
             results.append(chunk)
         return results
+
+    async def fetch_embeddings(self, chunk_ids: list[str]) -> dict[str, list[float]]:
+        """Stored embeddings for MMR diversification (RT-5). pgvector returns
+        a '[x,y,...]' literal, which is valid JSON."""
+        if not chunk_ids:
+            return {}
+        conn = await self._connect()
+        try:
+            rows = await with_hard_timeout(
+                conn.fetch(_EMBEDDINGS_SQL, chunk_ids),
+                seconds=self._settings.db_timeout_seconds,
+                operation="chunks.fetch_embeddings",
+            )
+        finally:
+            await conn.close()
+        return {str(row["id"]): json.loads(row["embedding"]) for row in rows}

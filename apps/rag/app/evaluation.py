@@ -278,8 +278,11 @@ async def run_retrieval_eval(
         "rerankProvider": settings.rerank_provider if effective_rerank else None,
         "rerankModel": settings.rerank_model if effective_rerank else None,
         "rerankWindow": settings.rerank_window if effective_rerank else None,
-        # RT-5 lands later; snapshotted off so comparisons stay honest.
-        "multiQuery": False,
+        # RT-5: deployment-level toggles snapshotted per run.
+        "multiQuery": settings.multi_query_enabled,
+        "multiQueryCount": settings.multi_query_count if settings.multi_query_enabled else None,
+        "mmr": settings.mmr_enabled,
+        "mmrLambda": settings.mmr_lambda if settings.mmr_enabled else None,
     }
 
     run_id = await repository.create_run(

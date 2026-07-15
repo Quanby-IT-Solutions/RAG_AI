@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from app.chunks import ChunksRepository
 from app.config import Settings
 from app.embeddings import EmbeddingsClient
+from app.expansion import SupportsComplete, generate_rewordings, mmr_select
 from app.ingest import get_embeddings_client
 from app.reranking import Reranker, build_reranker, rerank_with_fallback
 from app.security import verify_service_jwt
@@ -68,12 +69,15 @@ class RetrievalService:
         embeddings: EmbeddingsClient,
         repository: ChunksRepository,
         reranker: Reranker | None = None,
+        expansion_client: SupportsComplete | None = None,
     ) -> None:
         self._settings = settings
         self._embeddings = embeddings
         self._repository = repository
         # RT-3: config-built cross-encoder (None when RERANK_ENABLED is off).
         self._reranker = reranker if reranker is not None else build_reranker(settings)
+        # RT-5: cheap-fast rewording client (None -> multi-query unavailable).
+        self._expansion_client = expansion_client
 
     @traced(name="rag.retrieve")
     async def retrieve(
@@ -85,6 +89,8 @@ class RetrievalService:
         keyword_weight: float | None = None,
         rerank: bool | None = None,
         filters: dict[str, Any] | None = None,
+        multi_query: bool | None = None,
+        mmr: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Return the top-k chunks (id, document_id, content, metadata,
         chunk_index, similarity, rrf_score[, rerank_score]) for the query,
@@ -95,8 +101,13 @@ class RetrievalService:
         fused order for A/B comparison; True requires a configured reranker).
         filters (RT-4): metadata predicates applied PRE-FUSION in both arms
         (docTypes/source/dateFrom/dateTo/section); a filter matching nothing
-        returns [] — never an unfiltered fallback. Empty corpus (or no
-        matches in either arm) -> [] cleanly (GN-1 answers "I don't know")."""
+        returns [] — never an unfiltered fallback.
+        multi_query / mmr (RT-5): independent optional stages, default from
+        Settings (both off pending eval evidence). Multi-query retrieves for
+        the cheap-model rewordings too, union deduped inside RRF; MMR
+        re-selects the final top-k balancing relevance vs redundancy.
+        Empty corpus (or no matches in either arm) -> [] cleanly (GN-1
+        answers "I don't know")."""
         top_k = self._settings.retrieval_top_k if k is None else k
         if top_k < 1:
             raise ValueError(f"k must be >= 1; got {k}")
@@ -110,30 +121,58 @@ class RetrievalService:
         # (RT-3's rerank window reads the same pool).
         pool = max(top_k, self._settings.retrieval_candidate_pool)
 
-        async def vector_arm() -> list[dict[str, Any]]:
-            if w_vector == 0:
+        # ── RT-5 multi-query stage: cheap-model rewordings retrieve too.
+        use_multi_query = (
+            self._settings.multi_query_enabled if multi_query is None else multi_query
+        )
+        rewordings: list[str] = []
+        if use_multi_query and self._expansion_client is not None:
+            rewordings = await generate_rewordings(
+                query,
+                client=self._expansion_client,
+                count=self._settings.multi_query_count,
+            )
+        elif use_multi_query:
+            logger.warning("multi_query.requested_without_expansion_client")
+        queries = [query, *rewordings]
+
+        async def vector_arm(vector: list[float] | None) -> list[dict[str, Any]]:
+            if w_vector == 0 or vector is None:
                 return []
-            # Same pinned client as indexing (D1): model + dims enforced there.
-            vectors, _ = await self._embeddings.embed_texts([query])
             return await self._repository.search_similar(
-                embedding=vectors[0],
+                embedding=vector,
                 k=pool,
                 ef_search=self._settings.hnsw_ef_search,
                 filters=filters,
             )
 
-        async def keyword_arm() -> list[dict[str, Any]]:
+        async def keyword_arm(text: str) -> list[dict[str, Any]]:
             if w_keyword == 0:
                 return []
-            return await self._repository.search_keyword(query=query, k=pool, filters=filters)
+            return await self._repository.search_keyword(query=text, k=pool, filters=filters)
 
-        # RT-2 AC: both searches execute concurrently.
-        vector_chunks, keyword_chunks = await asyncio.gather(vector_arm(), keyword_arm())
+        # Same pinned client as indexing (D1): all variants embed in ONE call.
+        query_vectors: list[list[float] | None] = [None] * len(queries)
+        if w_vector != 0:
+            vectors, _ = await self._embeddings.embed_texts(queries)
+            query_vectors = list(vectors)
 
-        fused_pool = reciprocal_rank_fusion(
-            [(w_vector, vector_chunks), (w_keyword, keyword_chunks)],
-            rrf_k=self._settings.rrf_k,
+        # RT-2 AC: both searches execute concurrently (across all variants).
+        arm_results = await asyncio.gather(
+            *[vector_arm(query_vectors[index]) for index in range(len(queries))],
+            *[keyword_arm(text) for text in queries],
         )
+        vector_results = arm_results[: len(queries)]
+        keyword_results = arm_results[len(queries) :]
+        vector_chunks = vector_results[0]
+        keyword_chunks = keyword_results[0]
+
+        # Union of every variant's rankings; RRF dedups by chunk id.
+        rankings = [
+            *[(w_vector, chunks) for chunks in vector_results],
+            *[(w_keyword, chunks) for chunks in keyword_results],
+        ]
+        fused_pool = reciprocal_rank_fusion(rankings, rrf_k=self._settings.rrf_k)
 
         # ── RT-3 rerank stage: re-score the top window jointly with the query.
         # rerank=False (eval A/B) degrades gracefully to fused order; failures
@@ -149,7 +188,24 @@ class RetrievalService:
                 timeout_seconds=self._settings.rerank_timeout_seconds,
             )
             fused_pool = [*reordered, *fused_pool[window:]]
-        fused = fused_pool[:top_k]
+
+        # ── RT-5 MMR stage: greedy relevance-vs-redundancy re-selection of the
+        # final top-k using the chunks' stored embeddings.
+        use_mmr = self._settings.mmr_enabled if mmr is None else mmr
+        mmr_applied = False
+        if use_mmr and len(fused_pool) > top_k:
+            embeddings_by_id = await self._repository.fetch_embeddings(
+                [chunk["id"] for chunk in fused_pool]
+            )
+            fused = mmr_select(
+                fused_pool,
+                embeddings_by_id=embeddings_by_id,
+                k=top_k,
+                lambda_=self._settings.mmr_lambda,
+            )
+            mmr_applied = True
+        else:
+            fused = fused_pool[:top_k]
 
         # Per-request retrieved-chunk record (RT-1/RT-2 observability). stage
         # is "retrieved" — NOT "used in prompt" (GN-2 logs that separately).
@@ -172,6 +228,26 @@ class RetrievalService:
                         "provider": self._reranker.provider
                         if use_rerank and self._reranker
                         else None,
+                    },
+                    # RT-5: rewordings + per-reword hits are trace-visible.
+                    "multiQuery": {
+                        "requested": use_multi_query,
+                        "rewordings": rewordings,
+                        "perQueryHits": [
+                            {
+                                "query": text,
+                                "vectorHits": len(vector_results[index]),
+                                "keywordHits": len(keyword_results[index]),
+                            }
+                            for index, text in enumerate(queries)
+                        ],
+                    }
+                    if use_multi_query
+                    else {"requested": False},
+                    "mmr": {
+                        "requested": use_mmr,
+                        "applied": mmr_applied,
+                        "lambda": self._settings.mmr_lambda if use_mmr else None,
                     },
                     "vector_arm": [
                         {"id": chunk["id"], "similarity": chunk["similarity"]}
@@ -207,10 +283,18 @@ def get_chunks_repository(request: Request) -> ChunksRepository:
 def get_retrieval_service(request: Request) -> RetrievalService:
     """Dependency seam for the GN-1 /chat path — reuses the shared per-app
     EmbeddingsClient so index and query embeddings share one client."""
+    settings = request.app.state.settings
+    expansion_client = None
+    if settings.multi_query_enabled:
+        # Cheap-fast model rewrites queries (RT-5); built only when enabled.
+        from app.providers import OpenAIChatClient
+
+        expansion_client = OpenAIChatClient(settings)
     return RetrievalService(
-        settings=request.app.state.settings,
+        settings=settings,
         embeddings=get_embeddings_client(request),
         repository=get_chunks_repository(request),
+        expansion_client=expansion_client,
     )
 
 

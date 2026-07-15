@@ -41,6 +41,10 @@ async def run_health_checks(settings: Settings) -> dict[str, str]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    # App-level INFO logs (retrieval traces, routing decisions, fallbacks)
+    # must reach stdout; uvicorn only configures its own loggers.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
