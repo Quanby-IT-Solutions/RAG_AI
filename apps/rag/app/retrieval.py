@@ -31,6 +31,7 @@ from app.config import Settings
 from app.embeddings import EmbeddingsClient
 from app.expansion import SupportsComplete, generate_rewordings, mmr_select
 from app.ingest import get_embeddings_client
+from app.rate_limit import rate_limit
 from app.reranking import Reranker, build_reranker, rerank_with_fallback
 from app.security import verify_service_jwt
 from app.tracing import traced
@@ -383,7 +384,7 @@ class RetrieveRequest(BaseModel):
     filters: RetrievalFilters | None = Field(default=None)
 
 
-@router.post("/retrieve")
+@router.post("/retrieve", dependencies=[Depends(rate_limit("rate_limit_default"))])
 async def retrieve_endpoint(
     payload: RetrieveRequest,
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],

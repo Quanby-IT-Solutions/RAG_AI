@@ -99,6 +99,15 @@ class Settings(BaseSettings):
         alias="INJECTION_ACTION", default="block"
     )
 
+    # --- Per-client rate limiting (SC-2) — SlowAPI/limits, Redis-backed so
+    # every replica shares counters. Keys are the verified JWT principal.
+    rate_limit_enabled: bool = Field(alias="RATE_LIMIT_ENABLED", default=True)
+    # Override the counter store (tests: memory://); default = REDIS_URL.
+    rate_limit_storage: str | None = Field(alias="RATE_LIMIT_STORAGE", default=None)
+    rate_limit_chat: str = Field(alias="RATE_LIMIT_CHAT", default="30/minute")
+    rate_limit_ingest: str = Field(alias="RATE_LIMIT_INGEST", default="10/minute")
+    rate_limit_default: str = Field(alias="RATE_LIMIT_DEFAULT", default="120/minute")
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)

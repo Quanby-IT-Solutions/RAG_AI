@@ -29,6 +29,7 @@ from app.documents import DocumentsRepository
 from app.embeddings import EmbeddingsClient
 from app.jobs import JobsRepository
 from app.loaders import LoaderSpec, resolve_loader, supported_mime_types
+from app.rate_limit import rate_limit
 from app.security import ServicePrincipal, verify_service_jwt
 from app.tracing import traced
 
@@ -194,7 +195,7 @@ async def _ingest_document(
     return _document_response(document, reused=False, job_id=job["id"])
 
 
-@router.post("/ingest")
+@router.post("/ingest", dependencies=[Depends(rate_limit("rate_limit_ingest"))])
 async def ingest_document(
     file: UploadFile,
     principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
@@ -234,7 +235,7 @@ async def ingest_document(
     )
 
 
-@router.post("/jobs/{job_id}/rerun")
+@router.post("/jobs/{job_id}/rerun", dependencies=[Depends(rate_limit("rate_limit_ingest"))])
 async def rerun_job(
     job_id: str,
     principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],

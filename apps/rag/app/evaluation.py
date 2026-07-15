@@ -27,6 +27,7 @@ from app.generation_eval import (
     generate_answer,
 )
 from app.generation_eval import SupportsComplete as EvalChatClient
+from app.rate_limit import rate_limit
 from app.retrieval import RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
 from app.timeouts import with_hard_timeout
@@ -469,7 +470,7 @@ def get_eval_chat_client(request: Request) -> EvalChatClient:
     return OpenAIChatClient(request.app.state.settings)
 
 
-@router.post("/eval/retrieval")
+@router.post("/eval/retrieval", dependencies=[Depends(rate_limit("rate_limit_default"))])
 async def execute_retrieval_eval(
     payload: RetrievalEvalRequest,
     request: Request,

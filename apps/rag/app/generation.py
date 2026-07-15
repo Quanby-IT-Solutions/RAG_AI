@@ -38,6 +38,7 @@ from app.providers import (
     SingleClientRouter,
     build_model_router,
 )
+from app.rate_limit import rate_limit
 from app.reliability import CircuitBreaker, ReliabilityRouter, validate_output
 from app.retrieval import RetrievalFilters, RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
@@ -631,7 +632,7 @@ def get_compressor(request: Request) -> "Compressor | None":
     )
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(rate_limit("rate_limit_chat"))])
 async def chat(
     payload: ChatRequest,
     request: Request,
@@ -671,7 +672,7 @@ async def chat(
         ) from exc
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", dependencies=[Depends(rate_limit("rate_limit_chat"))])
 async def chat_stream(
     payload: ChatRequest,
     request: Request,

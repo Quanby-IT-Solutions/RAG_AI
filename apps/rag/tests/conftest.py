@@ -8,6 +8,8 @@ REQUIRED_ENV = {
     "OPENAI_API_KEY": "test-openai-key",
     "RAG_SERVICE_TOKEN_SECRET": "test-service-secret",
     "LANGSMITH_API_KEY": "test-langsmith-key",
+    # SC-2: unit tests must never touch a real Redis for limit counters.
+    "RATE_LIMIT_STORAGE": "memory://",
 }
 
 

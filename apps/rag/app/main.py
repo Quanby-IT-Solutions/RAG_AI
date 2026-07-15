@@ -66,6 +66,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Internal-only ingestion (Flow A) + chat (Flow B) surfaces; every
     # /internal/* route is protected by the service-JWT dependency.
+    # SC-2: shared per-principal limiter (Redis-backed; /health is exempt
+    # because it carries no rate-limit dependency).
+    from app.rate_limit import build_limiter
+
+    app.state.limiter = build_limiter(settings)
+
     app.include_router(ingest.router)
     app.include_router(generation.router)
     app.include_router(retrieval.router)
