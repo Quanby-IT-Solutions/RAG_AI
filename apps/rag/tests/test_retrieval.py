@@ -53,6 +53,9 @@ class FakeChunksRepository:
         self.concurrency_probe: dict[str, Any] | None = None
         # RT-5: MMR reads stored embeddings through this seam.
         self.embeddings: dict[str, list[float]] = {}
+        # RT-6: parent-swap reads full rows through this seam.
+        self.by_ids: dict[str, dict[str, Any]] = {}
+        self.by_ids_calls: list[list[str]] = []
 
     async def search_similar(
         self, *, embedding: list[float], k: int, ef_search: int, filters=None
@@ -67,6 +70,10 @@ class FakeChunksRepository:
 
     async def fetch_embeddings(self, chunk_ids: list[str]) -> dict[str, list[float]]:
         return {cid: self.embeddings[cid] for cid in chunk_ids if cid in self.embeddings}
+
+    async def fetch_by_ids(self, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
+        self.by_ids_calls.append(chunk_ids)
+        return {cid: self.by_ids[cid] for cid in chunk_ids if cid in self.by_ids}
 
     async def search_keyword(
         self, *, query: str, k: int, filters=None

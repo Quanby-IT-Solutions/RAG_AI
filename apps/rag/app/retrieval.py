@@ -91,6 +91,7 @@ class RetrievalService:
         filters: dict[str, Any] | None = None,
         multi_query: bool | None = None,
         mmr: bool | None = None,
+        parent_doc: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Return the top-k chunks (id, document_id, content, metadata,
         chunk_index, similarity, rrf_score[, rerank_score]) for the query,
@@ -106,6 +107,9 @@ class RetrievalService:
         Settings (both off pending eval evidence). Multi-query retrieves for
         the cheap-model rewordings too, union deduped inside RRF; MMR
         re-selects the final top-k balancing relevance vs redundancy.
+        parent_doc (RT-6): after selection, matched children are swapped for
+        their larger parent chunks (deduped, child order preserved, child
+        scores carried); chunks without a parent pass through unchanged.
         Empty corpus (or no matches in either arm) -> [] cleanly (GN-1
         answers "I don't know")."""
         top_k = self._settings.retrieval_top_k if k is None else k
@@ -207,6 +211,50 @@ class RetrievalService:
         else:
             fused = fused_pool[:top_k]
 
+        # ── RT-6 parent-doc stage: swap matched children for their parents.
+        use_parent_doc = (
+            self._settings.parent_doc_enabled if parent_doc is None else parent_doc
+        )
+        matched_children: list[dict[str, str]] = []
+        if use_parent_doc:
+            parent_ids = [
+                chunk["parent_chunk_id"]
+                for chunk in fused
+                if chunk.get("parent_chunk_id")
+            ]
+            parents_by_id = (
+                await self._repository.fetch_by_ids(list(dict.fromkeys(parent_ids)))
+                if parent_ids
+                else {}
+            )
+            swapped: list[dict[str, Any]] = []
+            seen_parents: set[str] = set()
+            for chunk in fused:
+                parent_id = chunk.get("parent_chunk_id")
+                parent = parents_by_id.get(parent_id) if parent_id else None
+                if parent is None:
+                    swapped.append(chunk)
+                    continue
+                matched_children.append({"childId": chunk["id"], "parentId": parent_id})
+                if parent_id in seen_parents:
+                    continue  # dedup: several children may share one parent
+                seen_parents.add(parent_id)
+                # The parent inherits the matching child's ranking scores.
+                swapped.append(
+                    {
+                        **parent,
+                        "similarity": chunk.get("similarity"),
+                        "rrf_score": chunk.get("rrf_score"),
+                        **(
+                            {"rerank_score": chunk["rerank_score"]}
+                            if "rerank_score" in chunk
+                            else {}
+                        ),
+                        "arm_ranks": chunk.get("arm_ranks"),
+                    }
+                )
+            fused = swapped
+
         # Per-request retrieved-chunk record (RT-1/RT-2 observability). stage
         # is "retrieved" — NOT "used in prompt" (GN-2 logs that separately).
         logger.info(
@@ -248,6 +296,11 @@ class RetrievalService:
                         "requested": use_mmr,
                         "applied": mmr_applied,
                         "lambda": self._settings.mmr_lambda if use_mmr else None,
+                    },
+                    # RT-6: the matching children behind each returned parent.
+                    "parentDoc": {
+                        "requested": use_parent_doc,
+                        "matchedChildren": matched_children,
                     },
                     "vector_arm": [
                         {"id": chunk["id"], "similarity": chunk["similarity"]}

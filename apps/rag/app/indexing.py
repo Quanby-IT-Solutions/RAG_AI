@@ -45,10 +45,40 @@ async def index_document_content(
             max_chars=settings.chunk_max_chars,
             breakpoint_percentile=settings.semantic_breakpoint_percentile,
         )
+        # RT-6 parent-doc mode: group consecutive children under larger
+        # parent chunks. Parents are hashed and upserted like any chunk
+        # (Flow A stays idempotent); children reference them by hash and
+        # the repository resolves ids inside the indexing transaction.
+        parents: list[dict[str, Any]] = []
+        parent_hash_by_child: dict[int, str] = {}
+        if settings.parent_doc_enabled and chunk_list:
+            from app.chunking import _chunk_hash
+
+            group = settings.parent_group_size
+            for start in range(0, len(chunk_list), group):
+                members = chunk_list[start : start + group]
+                content = "\n\n".join(chunk.content for chunk in members)
+                parent_index = 100_000 + start // group
+                parent_hash = _chunk_hash(document["content_hash"], parent_index, content)
+                parents.append(
+                    {
+                        "content": content,
+                        "metadata": {
+                            "role": "parent",
+                            "childIndexes": [chunk.chunk_index for chunk in members],
+                        },
+                        "content_hash": parent_hash,
+                        "chunk_index": parent_index,
+                    }
+                )
+                for chunk in members:
+                    parent_hash_by_child[chunk.chunk_index] = parent_hash
+
         vectors: list[list[float]] = []
         batches = 0
-        if chunk_list:
-            vectors, batches = await embeddings.embed_texts([chunk.content for chunk in chunk_list])
+        texts = [chunk.content for chunk in chunk_list] + [row["content"] for row in parents]
+        if texts:
+            vectors, batches = await embeddings.embed_texts(texts)
         rows = [
             {
                 "content": chunk.content,
@@ -57,9 +87,22 @@ async def index_document_content(
                 "content_hash": chunk.content_hash,
                 "chunk_index": chunk.chunk_index,
                 "embedding_model": embeddings.model,
+                **(
+                    {"parent_hash": parent_hash_by_child[chunk.chunk_index]}
+                    if chunk.chunk_index in parent_hash_by_child
+                    else {}
+                ),
             }
-            for chunk, vector in zip(chunk_list, vectors, strict=True)
+            for chunk, vector in zip(chunk_list, vectors[: len(chunk_list)], strict=True)
         ]
+        rows.extend(
+            {
+                **parent,
+                "embedding": vector,
+                "embedding_model": embeddings.model,
+            }
+            for parent, vector in zip(parents, vectors[len(chunk_list) :], strict=True)
+        )
         indexed = await repository.index_chunks(
             document_id=document["id"],
             chunks=rows,

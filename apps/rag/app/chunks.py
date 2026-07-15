@@ -75,10 +75,12 @@ def _vector_sql(filter_clause: str) -> str:
     distance so the HNSW index (vector_cosine_ops) drives the scan; LIMIT
     applies top-k. Filters join `documents` and predicate pre-fusion."""
     join = "JOIN documents d ON d.id = chunks.document_id" if filter_clause else ""
-    where = f"WHERE {filter_clause}" if filter_clause else ""
+    # RT-6: parent chunks exist only as swap targets — never searched.
+    not_parent = "chunks.metadata->>'role' IS DISTINCT FROM 'parent'"
+    where = f"WHERE {not_parent}" + (f" AND {filter_clause}" if filter_clause else "")
     return f"""
 SELECT chunks.id, chunks.document_id, chunks.content, chunks.metadata,
-       chunks.chunk_index, chunks.content_hash,
+       chunks.chunk_index, chunks.content_hash, chunks.parent_chunk_id,
        1 - (chunks.embedding <=> $1::vector) AS similarity
 FROM chunks {join}
 {where}
@@ -96,10 +98,11 @@ def _keyword_sql(filter_clause: str) -> str:
     extra = f"AND {filter_clause}" if filter_clause else ""
     return f"""
 SELECT chunks.id, chunks.document_id, chunks.content, chunks.metadata,
-       chunks.chunk_index, chunks.content_hash,
+       chunks.chunk_index, chunks.content_hash, chunks.parent_chunk_id,
        ts_rank_cd(chunks.tsv, websearch_to_tsquery('english', $1)) AS rank
 FROM chunks {join}
-WHERE chunks.tsv @@ websearch_to_tsquery('english', $1) {extra}
+WHERE chunks.tsv @@ websearch_to_tsquery('english', $1)
+  AND chunks.metadata->>'role' IS DISTINCT FROM 'parent' {extra}
 ORDER BY rank DESC
 LIMIT $2
 """
@@ -116,12 +119,20 @@ def _row_to_chunk(row: Any) -> dict[str, Any]:
         # EV-1: expected-chunk binding key — stable across re-indexing of
         # unchanged content (doc-scoped chunk hash, IN-2).
         "content_hash": row["content_hash"],
+        # RT-6: present on child chunks in parent-doc mode.
+        "parent_chunk_id": str(row["parent_chunk_id"]) if row.get("parent_chunk_id") else None,
         "similarity": float(row["similarity"]),
     }
 
 
 _EMBEDDINGS_SQL = """
 SELECT id, embedding FROM chunks WHERE id = ANY($1::uuid[])
+"""
+
+_BY_IDS_SQL = """
+SELECT id, document_id, content, metadata, chunk_index, content_hash,
+       parent_chunk_id
+FROM chunks WHERE id = ANY($1::uuid[])
 """
 
 
@@ -193,6 +204,36 @@ class ChunksRepository:
             chunk = _row_to_chunk({**dict(row), "similarity": row["rank"]})
             results.append(chunk)
         return results
+
+    async def fetch_by_ids(self, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Chunk rows by id (RT-6 parent swap). No scores — callers carry the
+        matching child's scores onto the parent."""
+        if not chunk_ids:
+            return {}
+        conn = await self._connect()
+        try:
+            rows = await with_hard_timeout(
+                conn.fetch(_BY_IDS_SQL, chunk_ids),
+                seconds=self._settings.db_timeout_seconds,
+                operation="chunks.fetch_by_ids",
+            )
+        finally:
+            await conn.close()
+        result = {}
+        for row in rows:
+            metadata = row["metadata"]
+            result[str(row["id"])] = {
+                "id": str(row["id"]),
+                "document_id": str(row["document_id"]),
+                "content": row["content"],
+                "metadata": json.loads(metadata) if isinstance(metadata, str) else metadata,
+                "chunk_index": row["chunk_index"],
+                "content_hash": row["content_hash"],
+                "parent_chunk_id": str(row["parent_chunk_id"])
+                if row["parent_chunk_id"]
+                else None,
+            }
+        return result
 
     async def fetch_embeddings(self, chunk_ids: list[str]) -> dict[str, list[float]]:
         """Stored embeddings for MMR diversification (RT-5). pgvector returns

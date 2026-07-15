@@ -1,5 +1,5 @@
 import { defineRelations, sql } from "drizzle-orm"
-import { customType, index, primaryKey } from "drizzle-orm/pg-core"
+import { customType, index, primaryKey, type AnyPgColumn } from "drizzle-orm/pg-core"
 
 import { createTable } from "./utils/table.js"
 
@@ -316,6 +316,12 @@ export const chunks = createTable("chunks", t => ({
 	contentHash: t.text("content_hash").notNull().unique(),
 	chunkIndex: t.integer("chunk_index").notNull(),
 	embeddingModel: t.text("embedding_model").notNull(),
+	// RT-6 parent-document retrieval (additive per the cross-epic rule):
+	// small child chunks link to their larger parent chunk; parents carry
+	// metadata.role = 'parent' and are excluded from the search arms.
+	parentChunkId: t.uuid("parent_chunk_id").references((): AnyPgColumn => chunks.id, {
+		onDelete: "set null",
+	}),
 }))
 
 // ============================================================================

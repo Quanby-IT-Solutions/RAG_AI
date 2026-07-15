@@ -1,0 +1,2 @@
+ALTER TABLE "chunks" ADD COLUMN "parent_chunk_id" uuid;--> statement-breakpoint
+ALTER TABLE "chunks" ADD CONSTRAINT "chunks_parent_chunk_id_chunks_id_fkey" FOREIGN KEY ("parent_chunk_id") REFERENCES "chunks"("id") ON DELETE SET NULL;

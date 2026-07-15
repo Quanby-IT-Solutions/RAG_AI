@@ -283,6 +283,8 @@ async def run_retrieval_eval(
         "multiQueryCount": settings.multi_query_count if settings.multi_query_enabled else None,
         "mmr": settings.mmr_enabled,
         "mmrLambda": settings.mmr_lambda if settings.mmr_enabled else None,
+        # RT-6: parent-doc swap changes WHAT is returned, so runs record it.
+        "parentDoc": settings.parent_doc_enabled,
     }
 
     run_id = await repository.create_run(

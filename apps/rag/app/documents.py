@@ -56,15 +56,18 @@ WHERE document_id = $1 AND NOT (content_hash = ANY($2::text[]))
 # re-running indexing never duplicates rows. The `tsv` column is DB-generated.
 _CHUNK_UPSERT_SQL = """
 INSERT INTO chunks
-    (document_id, content, embedding, metadata, content_hash, chunk_index, embedding_model)
-VALUES ($1, $2, $3::vector, $4, $5, $6, $7)
+    (document_id, content, embedding, metadata, content_hash, chunk_index,
+     embedding_model, parent_chunk_id)
+VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8)
 ON CONFLICT (content_hash) DO UPDATE SET
     document_id = EXCLUDED.document_id,
     content = EXCLUDED.content,
     embedding = EXCLUDED.embedding,
     metadata = EXCLUDED.metadata,
     chunk_index = EXCLUDED.chunk_index,
-    embedding_model = EXCLUDED.embedding_model
+    embedding_model = EXCLUDED.embedding_model,
+    parent_chunk_id = EXCLUDED.parent_chunk_id
+RETURNING id, content_hash
 """
 
 _SET_DOCUMENT_STATUS_SQL = """
@@ -196,9 +199,12 @@ class DocumentsRepository:
         re-chunk (IN-4: new hashes) never leaves orphans behind.
 
         Each chunk dict carries content, embedding (list[float]), metadata,
-        content_hash, chunk_index, embedding_model. `metadata_patch` (e.g.
-        IN-4 chunking strategy/fallback info) merges into the document's
-        metadata jsonb. Returns the indexed document row."""
+        content_hash, chunk_index, embedding_model, and optionally
+        `parent_hash` (RT-6): parents (metadata.role == 'parent') upsert
+        FIRST so children can reference their id in the same transaction.
+        `metadata_patch` (e.g. IN-4 chunking strategy/fallback info) merges
+        into the document's metadata jsonb. Returns the indexed document
+        row."""
         conn = await self._connect()
         try:
             async with conn.transaction():
@@ -211,7 +217,29 @@ class DocumentsRepository:
                     seconds=self._settings.db_timeout_seconds,
                     operation="chunks.delete_stale",
                 )
-                for chunk in chunks:
+                # RT-6: parents first, so children can link by id.
+                parents = [c for c in chunks if (c.get("metadata") or {}).get("role") == "parent"]
+                children = [c for c in chunks if c not in parents]
+                parent_id_by_hash: dict[str, str] = {}
+                for chunk in parents:
+                    row = await with_hard_timeout(
+                        conn.fetchrow(
+                            _CHUNK_UPSERT_SQL,
+                            document_id,
+                            chunk["content"],
+                            _vector_literal(chunk["embedding"]),
+                            json.dumps(chunk["metadata"]),
+                            chunk["content_hash"],
+                            chunk["chunk_index"],
+                            chunk["embedding_model"],
+                            None,
+                        ),
+                        seconds=self._settings.db_timeout_seconds,
+                        operation="chunks.upsert_parent",
+                    )
+                    parent_id_by_hash[row["content_hash"]] = str(row["id"])
+                for chunk in children:
+                    parent_id = parent_id_by_hash.get(chunk.get("parent_hash", ""))
                     await with_hard_timeout(
                         conn.execute(
                             _CHUNK_UPSERT_SQL,
@@ -222,6 +250,7 @@ class DocumentsRepository:
                             chunk["content_hash"],
                             chunk["chunk_index"],
                             chunk["embedding_model"],
+                            parent_id,
                         ),
                         seconds=self._settings.db_timeout_seconds,
                         operation="chunks.upsert",

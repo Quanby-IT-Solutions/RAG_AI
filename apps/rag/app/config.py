@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     # λ balances relevance (1.0) against diversity (0.0).
     mmr_lambda: float = Field(alias="MMR_LAMBDA", default=0.5, ge=0, le=1)
 
+    # --- Parent-document retrieval (RT-6) — match small children, return the
+    # larger parent for context. Off by default; when on, ingestion groups
+    # consecutive child chunks under parent chunks (Flow A upsert-safe).
+    parent_doc_enabled: bool = Field(alias="PARENT_DOC_ENABLED", default=False)
+    parent_group_size: int = Field(alias="PARENT_GROUP_SIZE", default=3, ge=2, le=10)
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)
