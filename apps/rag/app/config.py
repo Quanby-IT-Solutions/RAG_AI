@@ -132,6 +132,18 @@ class Settings(BaseSettings):
         alias="SINGLE_FLIGHT_POLL_INTERVAL_SECONDS", default=0.15, gt=0
     )
 
+    # --- Shared provider rate control (CP-4, Flow C) — one Redis budget per
+    # provider across ALL replicas; a provider 429 temporarily shrinks it.
+    provider_bucket_enabled: bool = Field(alias="PROVIDER_BUCKET_ENABLED", default=True)
+    provider_rpm_openai: int = Field(alias="PROVIDER_RPM_OPENAI", default=300, ge=1)
+    provider_rpm_anthropic: int = Field(alias="PROVIDER_RPM_ANTHROPIC", default=60, ge=1)
+    bucket_window_seconds: int = Field(alias="BUCKET_WINDOW_SECONDS", default=10, ge=1)
+    bucket_wait_timeout_seconds: float = Field(
+        alias="BUCKET_WAIT_TIMEOUT_SECONDS", default=20.0, gt=0
+    )
+    bucket_shrink_factor: float = Field(alias="BUCKET_SHRINK_FACTOR", default=0.5, gt=0, le=1)
+    bucket_shrink_ttl_seconds: int = Field(alias="BUCKET_SHRINK_TTL_SECONDS", default=60, ge=1)
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)

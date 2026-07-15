@@ -830,6 +830,17 @@ def get_conversations_repository(request: Request) -> ConversationsRepository:
     return ConversationsRepository(request.app.state.settings)
 
 
+def get_provider_bucket(request: Request) -> Any:
+    """CP-4 seam: ONE shared bucket per app (None when disabled)."""
+    if not hasattr(request.app.state, "provider_bucket"):
+        from app.provider_bucket import build_provider_bucket
+
+        request.app.state.provider_bucket = build_provider_bucket(
+            request.app.state.settings
+        )
+    return request.app.state.provider_bucket
+
+
 def get_chat_client(request: Request) -> "ModelRouter | SingleClientRouter | ChatModelClient":
     """Dependency seam so tests can override the provider (never call real
     providers in tests). One router per app — reused across requests. The
@@ -838,7 +849,7 @@ def get_chat_client(request: Request) -> "ModelRouter | SingleClientRouter | Cha
     if client is None:
         settings = request.app.state.settings
         client = ReliabilityRouter(
-            build_model_router(settings),
+            build_model_router(settings, bucket=get_provider_bucket(request)),
             breaker=CircuitBreaker(settings),
             settings=settings,
         )

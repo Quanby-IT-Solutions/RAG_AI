@@ -72,6 +72,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.limiter = build_limiter(settings)
 
+    # CP-4 backpressure: a provider-budget shed is a CLEAN 429 with
+    # Retry-After (CH-2 renders the rate-limited state), never a raw 500.
+    from starlette.responses import JSONResponse
+
+    from app.provider_bucket import ProviderBucketExhausted
+
+    @app.exception_handler(ProviderBucketExhausted)
+    async def _bucket_exhausted(request, exc):  # type: ignore[no-untyped-def]
+        return JSONResponse(
+            status_code=429,
+            content={"detail": str(exc)},
+            headers={"Retry-After": str(settings.bucket_window_seconds)},
+        )
+
     app.include_router(ingest.router)
     app.include_router(generation.router)
     app.include_router(retrieval.router)

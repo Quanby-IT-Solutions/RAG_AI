@@ -146,7 +146,15 @@ async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     init_tracing(settings)
     ctx["settings"] = settings
-    ctx["embeddings"] = EmbeddingsClient(settings)
+    embeddings_client = EmbeddingsClient(settings)
+    if settings.provider_bucket_enabled:
+        # CP-4: worker embedding batches draw from the same shared budget.
+        from app.provider_bucket import ThrottledEmbeddingsClient, build_provider_bucket
+
+        bucket = build_provider_bucket(settings)
+        if bucket is not None:
+            embeddings_client = ThrottledEmbeddingsClient(embeddings_client, bucket)
+    ctx["embeddings"] = embeddings_client
     logger.info("arq worker started (redis=%s)", settings.redis_url)
 
 

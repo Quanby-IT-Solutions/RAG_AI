@@ -12,6 +12,8 @@ REQUIRED_ENV = {
     "RATE_LIMIT_STORAGE": "memory://",
     # CP-1: unit tests never touch a real Redis; cache tests inject fakes.
     "CACHE_ENABLED": "false",
+    # CP-4: unit tests never draw from a real provider budget.
+    "PROVIDER_BUCKET_ENABLED": "false",
 }
 
 

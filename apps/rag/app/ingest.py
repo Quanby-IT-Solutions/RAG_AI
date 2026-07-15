@@ -73,10 +73,19 @@ async def get_job_queue(request: Request) -> JobQueue:
 
 def get_embeddings_client(request: Request) -> EmbeddingsClient:
     """Dependency seam so tests can override the provider (never call real
-    OpenAI in tests). One client per app — reused across requests."""
+    OpenAI in tests). One client per app — reused across requests. CP-4:
+    embedding batches draw from the SAME shared provider budget as chat."""
     client = getattr(request.app.state, "embeddings_client", None)
     if client is None:
-        client = EmbeddingsClient(request.app.state.settings)
+        settings = request.app.state.settings
+        client = EmbeddingsClient(settings)
+        if settings.provider_bucket_enabled:
+            from app.generation import get_provider_bucket
+            from app.provider_bucket import ThrottledEmbeddingsClient
+
+            bucket = get_provider_bucket(request)
+            if bucket is not None:
+                client = ThrottledEmbeddingsClient(client, bucket)
         request.app.state.embeddings_client = client
     return client
 

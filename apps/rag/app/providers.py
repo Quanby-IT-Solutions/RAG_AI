@@ -292,16 +292,25 @@ class SingleClientRouter:
         }
 
 
-def build_model_router(settings: Settings) -> ModelRouter:
+def build_model_router(settings: Settings, bucket: Any = None) -> ModelRouter:
     """Assemble the deployment's router from config (GN-4).
 
     Strong tier: Anthropic when STRONG_MODEL_PROVIDER=anthropic and an API
     key is present; OpenAI when =openai; absent otherwise (router degrades to
-    cheap-only and records the reason per request)."""
-    cheap = OpenAIChatClient(settings)
+    cheap-only and records the reason per request).
+
+    CP-4: with a ProviderBucket, every client is bucket-gated BENEATH the
+    GN-5 reliability layer (order: bucket → breaker → provider call)."""
+    cheap: ChatModelClient = OpenAIChatClient(settings)
     strong: ChatModelClient | None = None
     if settings.strong_model_provider == "anthropic" and settings.anthropic_api_key:
         strong = AnthropicChatClient(settings)
     elif settings.strong_model_provider == "openai":
         strong = OpenAIChatClient(settings, model=settings.strong_model)
+    if bucket is not None:
+        from app.provider_bucket import ThrottledChatClient
+
+        cheap = ThrottledChatClient(cheap, bucket)
+        if strong is not None:
+            strong = ThrottledChatClient(strong, bucket)
     return ModelRouter(settings, cheap=cheap, strong=strong)
