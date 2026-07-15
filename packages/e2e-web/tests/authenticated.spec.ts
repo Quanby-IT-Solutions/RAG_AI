@@ -265,3 +265,22 @@ test.describe("ingestion jobs console (IN-7)", () => {
 		await expect(row.getByText("indexed")).toBeVisible({ timeout: 60_000 })
 	})
 })
+
+test.describe("chat streaming (GN-3/CH-2)", () => {
+	test("streams a cited answer progressively in the browser", async ({ page }) => {
+		await page.goto("/chat")
+		const input = page.getByRole("textbox")
+		await expect(input).toBeVisible()
+
+		await input.fill("How many vacation days do employees receive per year?")
+		await page.getByRole("button", { name: /send/i }).click()
+
+		// The streamed answer lands in an assistant bubble with a citation
+		// chip attached on the final frame.
+		const answer = page.getByText(/15 vacation days/i).first()
+		await expect(answer).toBeVisible({ timeout: 60_000 })
+		await expect(page.getByRole("link", { name: /sample\.html/i }).first()).toBeVisible({
+			timeout: 15_000,
+		})
+	})
+})

@@ -14,6 +14,10 @@ export type ChatThreadMessage =
 			citations: readonly ChatCitation[]
 			isIDontKnow: boolean
 			degraded: boolean
+			/** CH-2: tokens still arriving — citations attach on the final frame. */
+			streaming?: boolean
+			/** CH-2: the connection dropped mid-stream — partial answer shown. */
+			interrupted?: boolean
 	  }
 	| { id: string; role: "error"; content: string }
 
@@ -48,7 +52,7 @@ export function MessageBubble({ message }: { message: ChatThreadMessage }) {
 			<div
 				className={cn(
 					"bg-muted max-w-[85%] rounded-lg px-3 py-2 text-sm",
-					message.degraded && "border-destructive/40 border"
+					(message.degraded || message.interrupted) && "border-destructive/40 border"
 				)}
 			>
 				{/* B2: bounded provider-failure answer — flag it, don't fail silently. */}
@@ -57,13 +61,25 @@ export function MessageBubble({ message }: { message: ChatThreadMessage }) {
 						Service degraded — this may be incomplete. Please try again shortly.
 					</p>
 				) : null}
-				<p className="whitespace-pre-wrap">{message.content}</p>
-				{/* B1: a grounded "I don't know" is an honest answer, not an error. */}
-				{message.isIDontKnow ? (
+				{/* CH-2: dropped connection mid-stream — honest partial state. */}
+				{message.interrupted ? (
+					<p className="text-destructive mb-1 text-xs font-medium" role="status">
+						Connection lost — this answer is incomplete.
+					</p>
+				) : null}
+				<p className="whitespace-pre-wrap" aria-live={message.streaming ? "polite" : undefined}>
+					{message.content}
+					{message.streaming ? (
+						<span aria-hidden className="bg-foreground/70 ml-0.5 inline-block h-4 w-1 animate-pulse align-text-bottom" />
+					) : null}
+				</p>
+				{message.streaming || message.interrupted ? null : message.isIDontKnow ? (
+					/* B1: a grounded "I don't know" is an honest answer, not an error. */
 					<p className="text-muted-foreground mt-1 text-xs">
 						No supporting sources were found in the corpus for this question.
 					</p>
 				) : (
+					/* Citations attach on the final frame (CH-2). */
 					<div className="mt-2">
 						<CitationList citations={message.citations} />
 					</div>

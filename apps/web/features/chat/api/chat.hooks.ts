@@ -50,3 +50,98 @@ export function useChatQueryMutation() {
 		mutationFn: submitChatQuery,
 	})
 }
+
+// ── Streaming mode (GN-3 / CH-2) ─────────────────────────────────────────────
+
+/** Final SSE frame: the GN-1 answer envelope plus stream timing. */
+export type ChatStreamFinal = ChatAnswer & { ttftMs?: number | null; latencyMs?: number }
+
+export interface ChatStreamHandlers {
+	onToken: (delta: string) => void
+	onFinal: (final: ChatStreamFinal) => void
+}
+
+/** Thrown when the SSE connection drops before the final frame — the caller
+ * renders a partial-answer state with a retry affordance (CH-2 AC). */
+export class ChatStreamInterruptedError extends Error {
+	constructor(public readonly receivedTokens: boolean) {
+		super("The connection dropped before the answer finished.")
+		this.name = "ChatStreamInterruptedError"
+	}
+}
+
+/**
+ * POST /chat/stream (SSE): calls onToken per delta and onFinal exactly once.
+ * Pre-stream HTTP failures throw ApiError (429 carries Retry-After); a
+ * connection dropped mid-stream throws ChatStreamInterruptedError.
+ */
+export async function streamChatQuery(
+	input: ChatQueryInput,
+	handlers: ChatStreamHandlers,
+	signal?: AbortSignal
+): Promise<void> {
+	let response: Response
+	try {
+		response = await fetch(`${API_BASE}/chat/stream`, {
+			method: "POST",
+			credentials: "include",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(input),
+			signal,
+		})
+	} catch (error) {
+		if ((error as Error | null)?.name === "AbortError") throw error
+		throw new ChatStreamInterruptedError(false)
+	}
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	if (!response.body) {
+		throw new ChatStreamInterruptedError(false)
+	}
+
+	const reader = response.body.getReader()
+	const decoder = new TextDecoder()
+	let buffer = ""
+	let sawFinal = false
+	let receivedTokens = false
+
+	const handleFrame = (frame: string) => {
+		let event = "message"
+		let data = ""
+		for (const line of frame.split("\n")) {
+			if (line.startsWith("event: ")) event = line.slice(7).trim()
+			else if (line.startsWith("data: ")) data += line.slice(6)
+		}
+		if (!data) return
+		if (event === "token") {
+			receivedTokens = true
+			handlers.onToken((JSON.parse(data) as { delta: string }).delta)
+		} else if (event === "final") {
+			sawFinal = true
+			handlers.onFinal(JSON.parse(data) as ChatStreamFinal)
+		}
+	}
+
+	try {
+		for (;;) {
+			const { done, value } = await reader.read()
+			if (done) break
+			buffer += decoder.decode(value, { stream: true })
+			let separator = buffer.indexOf("\n\n")
+			while (separator !== -1) {
+				handleFrame(buffer.slice(0, separator))
+				buffer = buffer.slice(separator + 2)
+				separator = buffer.indexOf("\n\n")
+			}
+		}
+	} catch (error) {
+		if ((error as Error | null)?.name === "AbortError") throw error
+		throw new ChatStreamInterruptedError(receivedTokens)
+	}
+
+	if (!sawFinal) {
+		// Server closed the stream without a final frame — treat as a drop.
+		throw new ChatStreamInterruptedError(receivedTokens)
+	}
+}

@@ -35,6 +35,28 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 	})
 }
 
+/** SSE stream response (GN-3 shape): token frames then an optional final. */
+function sseResponse(events: [string, unknown][]): Response {
+	const body = events
+		.map(([event, data]) => `event: ${event}
+data: ${JSON.stringify(data)}
+
+`)
+		.join("")
+	return new Response(body, {
+		status: 200,
+		headers: { "Content-Type": "text/event-stream" },
+	})
+}
+
+function finalFrame(answer: ChatAnswer): [string, unknown] {
+	return ["final", { ...answer, ttftMs: 12, latencyMs: 100 }]
+}
+
+function streamOf(answer: ChatAnswer): Response {
+	return sseResponse([["token", { delta: answer.answer }], finalFrame(answer)])
+}
+
 function renderChatView(hasAccess = true) {
 	const queryClient = new QueryClient({
 		defaultOptions: { mutations: { retry: false } },
@@ -75,7 +97,7 @@ describe("ChatView", () => {
 	})
 
 	it("renders the answer with clickable citations showing source + page/section", async () => {
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(answerFixture)))
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamOf(answerFixture)))
 		renderChatView()
 
 		await askQuestion()
@@ -92,7 +114,7 @@ describe("ChatView", () => {
 			...answerFixture,
 			citations: [{ ...citationFixture, source: null }],
 		}
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(answer)))
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamOf(answer)))
 		renderChatView()
 
 		await askQuestion()
@@ -108,7 +130,7 @@ describe("ChatView", () => {
 			citations: [],
 			isIDontKnow: true,
 		}
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(answer)))
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamOf(answer)))
 		renderChatView()
 
 		await askQuestion()
@@ -126,7 +148,7 @@ describe("ChatView", () => {
 			citations: [],
 			degraded: true,
 		}
-		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(answer)))
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamOf(answer)))
 		renderChatView()
 
 		await askQuestion()
@@ -183,7 +205,54 @@ describe("ChatView", () => {
 		expect(await screen.findByRole("status", { name: /waiting for answer/i })).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: /sending/i })).toBeDisabled()
 
-		resolveFetch(jsonResponse(answerFixture))
+		resolveFetch(streamOf(answerFixture))
 		expect(await screen.findByText(answerFixture.answer)).toBeInTheDocument()
+	})
+
+	it("streams tokens progressively and attaches citations on the final frame (CH-2)", async () => {
+		const deltas = ["Vacation carry-over ", "is capped at ", "five days."]
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				sseResponse([
+					...deltas.map(delta => ["token", { delta }] as [string, unknown]),
+					finalFrame(answerFixture),
+				])
+			)
+		)
+		renderChatView()
+
+		await askQuestion()
+
+		// Final content assembled from the streamed deltas...
+		expect(await screen.findByText(answerFixture.answer)).toBeInTheDocument()
+		// ...with citations attached on the final frame.
+		expect(
+			screen.getByRole("link", { name: /hr-handbook\.pdf · p\. 12 · Leave policy/ })
+		).toBeInTheDocument()
+	})
+
+	it("renders a partial answer with a retry affordance when the stream drops (CH-2)", async () => {
+		const fetchMock = vi
+			.fn()
+			// First attempt: tokens arrive but the stream ends with NO final frame.
+			.mockResolvedValueOnce(sseResponse([["token", { delta: "Partial answ" }]]))
+			// Retry: a complete stream.
+			.mockResolvedValueOnce(streamOf(answerFixture))
+		vi.stubGlobal("fetch", fetchMock)
+		renderChatView()
+
+		const user = await askQuestion()
+
+		// Honest partial state — text kept, flagged, never a frozen spinner.
+		expect(await screen.findByText(/connection lost/i)).toBeInTheDocument()
+		expect(screen.getByText("Partial answ")).toBeInTheDocument()
+		expect(screen.queryByRole("status", { name: /waiting for answer/i })).not.toBeInTheDocument()
+
+		const retry = screen.getByRole("button", { name: /retry question/i })
+		await user.click(retry)
+
+		expect(await screen.findByText(answerFixture.answer)).toBeInTheDocument()
+		expect(fetchMock).toHaveBeenCalledTimes(2)
 	})
 })
