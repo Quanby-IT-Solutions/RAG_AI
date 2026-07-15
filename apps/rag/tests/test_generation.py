@@ -82,6 +82,7 @@ class FakeChatClient:
         fail: Exception | None = None,
     ) -> None:
         self.model = "gpt-4o-mini"
+        self.provider = "openai"
         self.answer = answer
         self.fail = fail
         self.calls: list[list[dict[str, str]]] = []
@@ -692,3 +693,58 @@ async def test_stream_endpoint_returns_sse_and_requires_service_jwt(settings):
     events = parse_sse(raw)
     assert events[-1][0] == "final"
     assert any(name == "token" for name, _ in events)
+
+
+# ------------------------------------------------------ model routing (GN-4)
+async def test_routing_selects_strong_model_and_records_the_decision(settings, caplog):
+    from app.providers import ModelRouter
+
+    cheap = FakeChatClient("Cheap answer. [1]")
+    strong = FakeChatClient("Strong answer. [1]")
+    strong.model = "claude-opus-4-8"
+    strong.provider = "anthropic"
+    router = ModelRouter(settings, cheap=cheap, strong=strong)
+
+    retrieval = FakeRetrievalService([make_chunk("Vacation is 20 days.")])
+    repository = FakeConversationsRepository()
+    service = GenerationService(settings, retrieval, router, repository)  # type: ignore[arg-type]
+
+    long_query = "Please compare and contrast every clause in detail. " * 10
+    with caplog.at_level(logging.INFO, logger="app.generation"):
+        result = await service.answer(query=long_query, k=None, principal=PRINCIPAL)
+
+    # The strong client answered; the cheap one was never called.
+    assert strong.calls and not cheap.calls
+    assert result["answer"] == "Strong answer. [1]"
+    assert result["model"] == "claude-opus-4-8"
+
+    # Decision recorded in the trace log and the audit + message row.
+    routing_logs = [r for r in caplog.records if "chat.routing" in r.getMessage()]
+    payload = json.loads(routing_logs[0].getMessage().split(" ", 1)[1])
+    assert payload["tier"] == "strong"
+    assert payload["reason"] == "query-length"
+    assert repository.audits[0]["after"]["routing"] == {
+        "tier": "strong",
+        "reason": "query-length",
+    }
+    assert repository.audits[0]["after"]["provider"] == "anthropic"
+    assert repository.turns[0]["model_used"] == "claude-opus-4-8"
+
+
+async def test_routing_keeps_simple_queries_on_cheap_fast(settings):
+    from app.providers import ModelRouter
+
+    cheap = FakeChatClient("Cheap answer. [1]")
+    strong = FakeChatClient("Strong answer. [1]")
+    strong.model = "claude-opus-4-8"
+    router = ModelRouter(settings, cheap=cheap, strong=strong)
+
+    retrieval = FakeRetrievalService([make_chunk("Vacation is 20 days.")])
+    service = GenerationService(
+        settings, retrieval, router, FakeConversationsRepository()
+    )  # type: ignore[arg-type]
+
+    result = await service.answer(query="Vacation days?", k=None, principal=PRINCIPAL)
+
+    assert cheap.calls and not strong.calls
+    assert result["model"] == "gpt-4o-mini"

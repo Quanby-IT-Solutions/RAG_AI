@@ -22,7 +22,7 @@ import logging
 import re
 import time
 import uuid
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
@@ -30,13 +30,19 @@ from pydantic import BaseModel, Field
 from app.budget import current_context_budget, select_within_budget
 from app.config import Settings
 from app.conversations import ConversationsRepository
+from app.providers import (
+    ChatModelClient,
+    ModelRouter,
+    OpenAIChatClient,
+    SingleClientRouter,
+    build_model_router,
+)
 from app.retrieval import RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
-from app.timeouts import with_hard_timeout
 from app.tracing import traced
 
-if TYPE_CHECKING:
-    from openai import AsyncOpenAI
+# Backward-compat alias: the GN-1 ChatClient moved to app.providers (GN-4).
+ChatClient = OpenAIChatClient
 
 logger = logging.getLogger(__name__)
 
@@ -104,85 +110,6 @@ def _cited_positions(answer: str, chunk_count: int) -> list[int]:
     return seen
 
 
-class ChatClient:
-    """Thin non-streamed wrapper over the OpenAI chat completions endpoint
-    (single provider, GN-1). Model routing/failover is GN-4/GN-5."""
-
-    def __init__(self, settings: Settings, client: "AsyncOpenAI | None" = None) -> None:
-        self._settings = settings
-        self._client = client
-        self.model = settings.generation_model
-
-    def _openai(self) -> "AsyncOpenAI":
-        if self._client is None:
-            from openai import AsyncOpenAI
-
-            self._client = AsyncOpenAI(api_key=self._settings.openai_api_key)
-        return self._client
-
-    async def complete(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int] | None]:
-        """One non-streamed chat completion under the hard timeout; returns
-        (answer text, token usage) and validates the output is non-empty."""
-        response = await with_hard_timeout(
-            self._openai().chat.completions.create(
-                model=self.model,
-                messages=messages,  # type: ignore[arg-type]
-                stream=False,
-            ),
-            seconds=self._settings.external_call_timeout_seconds,
-            operation="openai.chat.completions.create",
-        )
-        content = (response.choices[0].message.content or "").strip()
-        if not content:
-            raise RuntimeError(f"OpenAI returned an empty completion (model={self.model})")
-        usage = getattr(response, "usage", None)
-        token_usage = (
-            {
-                "promptTokens": usage.prompt_tokens,
-                "completionTokens": usage.completion_tokens,
-                "totalTokens": usage.total_tokens,
-            }
-            if usage is not None
-            else None
-        )
-        return content, token_usage
-
-    async def stream(self, messages: list[dict[str, str]]) -> Any:
-        """Streamed chat completion (GN-3): yields text deltas, then a final
-        ("__usage__", token_usage) sentinel tuple. Creating the stream runs
-        under the hard timeout; the provider stream is closed on generator
-        close (client disconnect -> no orphaned spend)."""
-        stream = await with_hard_timeout(
-            self._openai().chat.completions.create(
-                model=self.model,
-                messages=messages,  # type: ignore[arg-type]
-                stream=True,
-                stream_options={"include_usage": True},
-            ),
-            seconds=self._settings.external_call_timeout_seconds,
-            operation="openai.chat.completions.stream",
-        )
-        token_usage: dict[str, int] | None = None
-        try:
-            async for chunk in stream:
-                usage = getattr(chunk, "usage", None)
-                if usage is not None:
-                    token_usage = {
-                        "promptTokens": usage.prompt_tokens,
-                        "completionTokens": usage.completion_tokens,
-                        "totalTokens": usage.total_tokens,
-                    }
-                if chunk.choices:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        yield delta
-        finally:
-            # Cancellation propagation: closing this generator closes the
-            # provider stream, aborting the completion server-side.
-            await stream.close()
-        yield ("__usage__", token_usage)
-
-
 class GenerationService:
     """Retrieve -> grounded prompt -> single-provider completion -> citations
     -> persist turn -> audit, as one traced request."""
@@ -191,12 +118,16 @@ class GenerationService:
         self,
         settings: Settings,
         retrieval: RetrievalService,
-        chat_client: ChatClient,
+        chat_client: "ModelRouter | SingleClientRouter | ChatModelClient",
         repository: ConversationsRepository,
     ) -> None:
         self._settings = settings
         self._retrieval = retrieval
-        self._chat_client = chat_client
+        # GN-4: accept a router (production) or a bare client (tests /
+        # single-provider deployments) behind one seam.
+        self._router = (
+            chat_client if hasattr(chat_client, "route") else SingleClientRouter(chat_client)
+        )
         self._repository = repository
 
     async def _build_citations(
@@ -294,6 +225,10 @@ class GenerationService:
         used_record = prep["used_record"]
         selection = prep["selection"]
 
+        # Flow B route stage (GN-4): cheap-fast vs strong, decision recorded.
+        client, routing = self._router.route(query=query, chunks=chunks)
+        logger.info("chat.routing %s", json.dumps(routing))
+
         token_usage: dict[str, int] | None = None
         degraded = False
         if not used_chunks:
@@ -303,14 +238,14 @@ class GenerationService:
             citations: list[dict[str, Any]] = []
         else:
             try:
-                answer_text, token_usage = await self._chat_client.complete(prep["messages"])
+                answer_text, token_usage = await client.complete(prep["messages"])
             except Exception as exc:
                 # Alternate B2: provider error/timeout -> bounded degradation,
                 # no silent failure; the trace records the failure path.
                 # Retry/circuit-breaker/failover is GN-5 — deliberately absent.
                 logger.warning(
                     "chat.generation_degraded model=%s reason=%s",
-                    self._chat_client.model,
+                    client.model,
                     exc,
                 )
                 answer_text = DEGRADED_ANSWER
@@ -334,7 +269,7 @@ class GenerationService:
             used_chunks=used_record,
             token_usage=token_usage,
             trace_id=trace_id,
-            model_used=self._chat_client.model,
+            model_used=client.model,
         )
 
         is_i_dont_know = _is_i_dont_know(answer_text)
@@ -350,7 +285,9 @@ class GenerationService:
             before=None,
             after={
                 "messageId": message_id,
-                "model": self._chat_client.model,
+                "model": client.model,
+                "provider": client.provider,
+                "routing": {"tier": routing["tier"], "reason": routing["reason"]},
                 "retrievedChunkCount": len(chunks),
                 "usedChunkCount": len(used_chunks),
                 "contextTokens": selection["contextTokens"],
@@ -369,7 +306,7 @@ class GenerationService:
             "conversationId": conversation_id,
             "messageId": message_id,
             "traceId": trace_id,
-            "model": self._chat_client.model,
+            "model": client.model,
             "tokenUsage": token_usage,
             "isIDontKnow": is_i_dont_know,
             "degraded": degraded,
@@ -392,6 +329,10 @@ class GenerationService:
         prep = await self._prepare(query=query, k=k)
         used_chunks = prep["used_chunks"]
 
+        # Flow B route stage (GN-4): decision recorded before generation.
+        client, routing = self._router.route(query=query, chunks=prep["chunks"])
+        logger.info("chat.routing %s", json.dumps(routing))
+
         token_usage: dict[str, int] | None = None
         degraded = False
         ttft_ms: float | None = None
@@ -409,7 +350,7 @@ class GenerationService:
                 # aborts the completion — no orphaned spend).
                 from contextlib import aclosing
 
-                async with aclosing(self._chat_client.stream(prep["messages"])) as stream:
+                async with aclosing(client.stream(prep["messages"])) as stream:
                     async for item in stream:
                         if isinstance(item, tuple):  # ("__usage__", usage) sentinel
                             token_usage = item[1]
@@ -418,20 +359,20 @@ class GenerationService:
                             ttft_ms = round((time.perf_counter() - started) * 1000, 3)
                             logger.info(
                                 "chat.stream_ttft %s",
-                                json.dumps({"ttftMs": ttft_ms, "model": self._chat_client.model}),
+                                json.dumps({"ttftMs": ttft_ms, "model": client.model}),
                             )
                         parts.append(item)
                         yield _sse("token", {"delta": item})
                 answer_text = "".join(parts).strip()
                 if not answer_text:
                     raise RuntimeError(
-                        f"OpenAI returned an empty stream (model={self._chat_client.model})"
+                        f"Provider returned an empty stream (model={client.model})"
                     )
             except Exception as exc:
                 # Alternate B2 mid-stream: bounded degradation on the final
                 # frame; the trace records the failure path.
                 logger.warning(
-                    "chat.stream_degraded model=%s reason=%s", self._chat_client.model, exc
+                    "chat.stream_degraded model=%s reason=%s", client.model, exc
                 )
                 answer_text = DEGRADED_ANSWER
                 degraded = True
@@ -450,7 +391,7 @@ class GenerationService:
             used_chunks=prep["used_record"],
             token_usage=token_usage,
             trace_id=trace_id,
-            model_used=self._chat_client.model,
+            model_used=client.model,
         )
 
         is_i_dont_know = _is_i_dont_know(answer_text)
@@ -465,7 +406,9 @@ class GenerationService:
             before=None,
             after={
                 "messageId": message_id,
-                "model": self._chat_client.model,
+                "model": client.model,
+                "provider": client.provider,
+                "routing": {"tier": routing["tier"], "reason": routing["reason"]},
                 "retrievedChunkCount": len(prep["chunks"]),
                 "usedChunkCount": len(used_chunks),
                 "contextTokens": prep["selection"]["contextTokens"],
@@ -487,7 +430,7 @@ class GenerationService:
                 "conversationId": conversation_id,
                 "messageId": message_id,
                 "traceId": trace_id,
-                "model": self._chat_client.model,
+                "model": client.model,
                 "tokenUsage": token_usage,
                 "isIDontKnow": is_i_dont_know,
                 "degraded": degraded,
@@ -505,12 +448,13 @@ def get_conversations_repository(request: Request) -> ConversationsRepository:
     return ConversationsRepository(request.app.state.settings)
 
 
-def get_chat_client(request: Request) -> ChatClient:
+def get_chat_client(request: Request) -> "ModelRouter | SingleClientRouter | ChatModelClient":
     """Dependency seam so tests can override the provider (never call real
-    OpenAI in tests). One client per app — reused across requests."""
+    providers in tests). One router per app — reused across requests. The
+    name is kept from GN-1; since GN-4 it returns the ModelRouter."""
     client = getattr(request.app.state, "chat_client", None)
     if client is None:
-        client = ChatClient(request.app.state.settings)
+        client = build_model_router(request.app.state.settings)
         request.app.state.chat_client = client
     return client
 

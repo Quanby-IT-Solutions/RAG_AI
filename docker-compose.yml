@@ -179,6 +179,11 @@ services:
       - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-ragai}
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # GN-4 model routing: strong tier (Anthropic) is optional — without the
+      # key the router serves everything cheap-fast and records why.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - STRONG_MODEL=${STRONG_MODEL:-claude-opus-4-8}
+      - STRONG_MODEL_PROVIDER=${STRONG_MODEL_PROVIDER:-anthropic}
       - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
       # Tracing (LangSmith default; set TRACING_PROVIDER=langfuse to switch)
       - TRACING_PROVIDER=${TRACING_PROVIDER:-langsmith}
@@ -230,6 +235,11 @@ services:
       - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-ragai}
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # GN-4 model routing: strong tier (Anthropic) is optional — without the
+      # key the router serves everything cheap-fast and records why.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - STRONG_MODEL=${STRONG_MODEL:-claude-opus-4-8}
+      - STRONG_MODEL_PROVIDER=${STRONG_MODEL_PROVIDER:-anthropic}
       - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
       - TRACING_PROVIDER=${TRACING_PROVIDER:-langsmith}
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}

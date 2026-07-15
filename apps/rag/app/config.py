@@ -62,6 +62,25 @@ class Settings(BaseSettings):
     # Read per request (env override wins) so changes apply without restart.
     context_token_budget: int = Field(alias="CONTEXT_TOKEN_BUDGET", default=2000, ge=1)
 
+    # --- Model routing (GN-4) — cheap-fast vs strong across two providers.
+    # Strong tier defaults to Anthropic; without ANTHROPIC_API_KEY the router
+    # degrades to cheap-only (decision records "strong-unavailable").
+    anthropic_api_key: str | None = Field(alias="ANTHROPIC_API_KEY", default=None)
+    strong_model: str = Field(alias="STRONG_MODEL", default="claude-opus-4-8", min_length=1)
+    strong_model_provider: Literal["openai", "anthropic"] = Field(
+        alias="STRONG_MODEL_PROVIDER", default="anthropic"
+    )
+    # Anthropic's Messages API requires max_tokens; also caps answer length.
+    generation_max_tokens: int = Field(alias="GENERATION_MAX_TOKENS", default=2048, ge=1)
+    # Route strong when the query is at least this many characters...
+    routing_query_length_threshold: int = Field(
+        alias="ROUTING_QUERY_LENGTH_THRESHOLD", default=240, ge=1
+    )
+    # ...or when the best fused similarity is below this floor (hard question).
+    routing_min_top_similarity: float = Field(
+        alias="ROUTING_MIN_TOP_SIMILARITY", default=0.2, ge=0, le=1
+    )
+
     # --- Chunking (IN-4) — semantic primary, recursive fallback. Fixed-size
     # chunking is intentionally NOT selectable (ticket AC): the Literal only
     # admits meaning-based strategies.
