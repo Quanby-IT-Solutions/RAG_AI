@@ -1,10 +1,11 @@
-"""POST /internal/ingest — upload, normalize & index one PDF (Flow A, IN-1+IN-2).
+"""POST /internal/ingest — upload, normalize & index one document (Flow A, IN-1+IN-2+IN-3).
 
 Verifies the gateway service JWT, defensively re-checks type/size (the
 gateway's Multer limits are the first line), computes the sha256 content
-hash, normalizes the PDF with the LangChain loader, and idempotently upserts
-the `documents` row (upsert on content_hash — alternate A1). Corrupt PDFs are
-recorded as status=failed with the parse error (alternate A2).
+hash, normalizes the upload with the format's loader (PDF/HTML/DOCX/CSV —
+app.loaders, IN-3), and idempotently upserts the `documents` row (upsert on
+content_hash — alternate A1). Corrupt/unreadable files are recorded as
+status=failed with the parse error (alternate A2).
 
 R1 fuses upload + index into one synchronous action (async jobs are IN-7):
 a successful normalize proceeds straight to chunk (recursive splitter) ->
@@ -18,8 +19,6 @@ audit_log, recording chunk count / embed batch info.
 
 import asyncio
 import hashlib
-import os
-import tempfile
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -28,11 +27,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from app.chunking import build_chunks
 from app.documents import DocumentsRepository
 from app.embeddings import EmbeddingsClient
+from app.loaders import LoaderSpec, resolve_loader, supported_mime_types
 from app.security import ServicePrincipal, verify_service_jwt
 from app.tracing import traced
 
-MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024
-PDF_MIME_TYPE = "application/pdf"
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 AUDIT_ACTION_UPLOAD = "corpus.document.upload"
 
@@ -52,38 +51,6 @@ def get_embeddings_client(request: Request) -> EmbeddingsClient:
         client = EmbeddingsClient(request.app.state.settings)
         request.app.state.embeddings_client = client
     return client
-
-
-def _normalize_pdf(raw: bytes, filename: str, source_uri: str) -> dict[str, Any]:
-    """Load + normalize the PDF to {text, source, metadata} (sync, run in a thread).
-
-    PyPDFLoader reads from a path, so the bytes are staged in a temp dir for
-    the duration of the parse. Raises on corrupt/unreadable input.
-    """
-    from langchain_community.document_loaders import PyPDFLoader
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        pdf_path = os.path.join(tmp_dir, "upload.pdf")
-        with open(pdf_path, "wb") as handle:
-            handle.write(raw)
-        pages = PyPDFLoader(pdf_path).load()
-
-    text = "\n\n".join(page.page_content for page in pages)
-    return {
-        # Normalized document (DOMAIN-MODEL): {text, source, metadata}.
-        "source": source_uri,
-        "originalFilename": filename,
-        "ingestedAt": datetime.now(UTC).isoformat(),
-        "pageCount": len(pages),
-        "pages": [
-            {
-                "page": page.metadata.get("page", index),
-                "chars": len(page.page_content),
-            }
-            for index, page in enumerate(pages)
-        ],
-        "text": text,
-    }
 
 
 def _document_response(
@@ -159,10 +126,11 @@ async def _index_document(
 
 
 @traced(name="rag.ingest")
-async def _ingest_pdf(
+async def _ingest_document(
     *,
     raw: bytes,
     filename: str,
+    loader: LoaderSpec,
     principal: ServicePrincipal,
     repository: DocumentsRepository,
     embeddings: EmbeddingsClient,
@@ -192,15 +160,16 @@ async def _ingest_pdf(
         await _audit(existing, {"noop": True})
         return _document_response(existing, reused=True)
 
-    # Alternate A2: corrupt/unreadable PDF -> the row is recorded as failed
+    # Alternate A2: corrupt/unreadable file -> the row is recorded as failed
     # with the parse reason (no partial normalized payload), UI shows Failed.
     try:
-        metadata = await asyncio.to_thread(_normalize_pdf, raw, filename, source_uri)
+        metadata = await asyncio.to_thread(loader.normalize, raw, filename, source_uri)
     except Exception as exc:
-        reason = f"PDF parse failed: {exc}" if str(exc) else "PDF parse failed"
+        label = f"{loader.doc_type.upper()} parse failed"
+        reason = f"{label}: {exc}" if str(exc) else label
         failed = await repository.upsert_document(
             source_uri=source_uri,
-            doc_type="pdf",
+            doc_type=loader.doc_type,
             content_hash=content_hash,
             status="failed",
             metadata={
@@ -220,7 +189,7 @@ async def _ingest_pdf(
     # by the SQL WHERE guard.
     document = await repository.upsert_document(
         source_uri=source_uri,
-        doc_type="pdf",
+        doc_type=loader.doc_type,
         content_hash=content_hash,
         status="processing",
         metadata=metadata,
@@ -253,24 +222,30 @@ async def ingest_document(
     embeddings: Annotated[EmbeddingsClient, Depends(get_embeddings_client)],
 ) -> dict[str, Any]:
     # Defensive re-checks (gateway already enforces both via Multer + Nginx).
-    if (file.content_type or "") != PDF_MIME_TYPE:
+    loader = resolve_loader(file.content_type)
+    if loader is None:
+        supported = ", ".join(supported_mime_types())
         raise HTTPException(
             status_code=415,
-            detail=f'Only PDF uploads are accepted (got "{file.content_type}")',
+            detail=(
+                f'Unsupported file type "{file.content_type}". '
+                f"Accepted types: {supported}."
+            ),
         )
 
     raw = await file.read()
-    if len(raw) > MAX_PDF_UPLOAD_BYTES:
+    if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
-            detail=f"PDF exceeds the {MAX_PDF_UPLOAD_BYTES} byte (25 MB) limit",
+            detail=f"File exceeds the {MAX_UPLOAD_BYTES} byte (25 MB) limit",
         )
     if not raw:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    return await _ingest_pdf(
+    return await _ingest_document(
         raw=raw,
-        filename=file.filename or "upload.pdf",
+        filename=file.filename or f"upload.{loader.doc_type}",
+        loader=loader,
         principal=principal,
         repository=repository,
         embeddings=embeddings,

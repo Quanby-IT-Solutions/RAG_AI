@@ -6,7 +6,12 @@ import { REQUIRED_PERMISSIONS_KEY } from "@/shared/decorators/require-permission
 
 import { CorpusController } from "./corpus.controller"
 import { CorpusService } from "./corpus.service"
-import { MAX_PDF_UPLOAD_BYTES, pdfFileFilter, pdfUploadOptions } from "./corpus.upload-options"
+import {
+	MAX_UPLOAD_BYTES,
+	SUPPORTED_UPLOAD_MIME_TYPES,
+	documentUploadOptions,
+	uploadFileFilter,
+} from "./corpus.upload-options"
 import { RagGatewayService } from "./rag-gateway.service"
 
 jest.mock("@orpc/nest", () => ({
@@ -91,13 +96,19 @@ describe("CorpusController", () => {
 			({ mimetype, originalname: "f", fieldname: "file" }) as Express.Multer.File
 
 		it("caps the file size at exactly 25 MB with a single file", () => {
-			expect(pdfUploadOptions.limits).toEqual({ fileSize: 25 * 1024 * 1024, files: 1 })
-			expect(MAX_PDF_UPLOAD_BYTES).toBe(26214400)
+			expect(documentUploadOptions.limits).toEqual({ fileSize: 25 * 1024 * 1024, files: 1 })
+			expect(MAX_UPLOAD_BYTES).toBe(26214400)
 		})
 
-		it("accepts application/pdf", () => {
+		it.each([...SUPPORTED_UPLOAD_MIME_TYPES])("accepts %s (IN-1 + IN-3 formats)", mimetype => {
 			const callback = jest.fn()
-			pdfFileFilter({} as never, asMulterFile("application/pdf"), callback)
+			uploadFileFilter({} as never, asMulterFile(mimetype), callback)
+			expect(callback).toHaveBeenCalledWith(null, true)
+		})
+
+		it("accepts a supported type with charset parameters", () => {
+			const callback = jest.fn()
+			uploadFileFilter({} as never, asMulterFile("text/csv; charset=utf-8"), callback)
 			expect(callback).toHaveBeenCalledWith(null, true)
 		})
 
@@ -105,10 +116,11 @@ describe("CorpusController", () => {
 			"rejects %s with a clear 415",
 			mimetype => {
 				const callback = jest.fn()
-				pdfFileFilter({} as never, asMulterFile(mimetype), callback)
+				uploadFileFilter({} as never, asMulterFile(mimetype), callback)
 				const [error] = callback.mock.calls[0] as [Error]
 				expect(error).toBeInstanceOf(UnsupportedMediaTypeException)
-				expect(error.message).toContain("Only PDF uploads are accepted")
+				expect(error.message).toContain("Unsupported file type")
+				expect(error.message).toContain("text/csv")
 			}
 		)
 	})

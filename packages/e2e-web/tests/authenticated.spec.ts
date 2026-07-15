@@ -148,3 +148,69 @@ test.describe("authenticated todos", () => {
 		await expect(checkbox).toHaveCount(0)
 	})
 })
+
+test.describe("corpus upload (IN-3 formats)", () => {
+	test("file input advertises all four supported formats", async ({ page }) => {
+		await page.goto("/corpus")
+		const input = page.getByLabel("Upload document")
+		await expect(input).toBeVisible()
+
+		const accept = (await input.getAttribute("accept")) ?? ""
+		expect(accept).toContain("application/pdf")
+		expect(accept).toContain("text/html")
+		expect(accept).toContain(
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		)
+		expect(accept).toContain("text/csv")
+
+		await expect(
+			page.getByText(/Single PDF, HTML, DOCX, or CSV file, up to 25 MB/)
+		).toBeVisible()
+	})
+
+	test("uploads a CSV through the UI and lists it as csv", async ({ page }, testInfo) => {
+		await page.goto("/corpus")
+		const input = page.getByLabel("Upload document")
+		await expect(input).toBeVisible()
+		// The documents table only renders client-side after the list query
+		// resolves — its presence proves hydration (setInputFiles before
+		// hydration is silently dropped in Next dev mode).
+		await expect(page.getByRole("table")).toBeVisible({ timeout: 30_000 })
+
+		// Unique content per run so the upsert path (not dedup no-op) is exercised.
+		const csv = `name,note\ne2e ${testInfo.workerIndex},run ${Date.now()}\n`
+		await input.setInputFiles({
+			name: "e2e-upload.csv",
+			mimeType: "text/csv",
+			buffer: Buffer.from(csv, "utf-8"),
+		})
+
+		// Ingestion is synchronous (R1): success copy appears when indexing completes.
+		await expect(
+			page.getByText(/Uploaded — the document is processing\.|Already ingested/)
+		).toBeVisible({ timeout: 60_000 })
+
+		// The corpus list refreshes and shows the new csv document.
+		await expect(
+			page.getByRole("row").filter({ hasText: "e2e-upload.csv" }).first()
+		).toBeVisible({ timeout: 15_000 })
+	})
+
+	test("client-side rejects unsupported file types with a clear message", async ({ page }) => {
+		await page.goto("/corpus")
+		const input = page.getByLabel("Upload document")
+		await expect(input).toBeVisible()
+		// Hydration gate — see the upload test above.
+		await expect(page.getByRole("table")).toBeVisible({ timeout: 30_000 })
+
+		await input.setInputFiles({
+			name: "notes.txt",
+			mimeType: "text/plain",
+			buffer: Buffer.from("plain text", "utf-8"),
+		})
+
+		await expect(
+			page.getByText("Only PDF, HTML, DOCX, and CSV files are accepted.")
+		).toBeVisible()
+	})
+})

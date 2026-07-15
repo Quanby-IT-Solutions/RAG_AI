@@ -10,7 +10,31 @@ import { env } from "@/env"
 const API_BASE = `${env.NEXT_PUBLIC_API_BASE_URL}/${env.NEXT_PUBLIC_API_VERSION}`
 
 /** Mirrors the gateway Multer limit (25 MB) for a friendly client-side hint. */
-export const MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+/** Mirrors the gateway allow-list (IN-1 PDF + IN-3 HTML/DOCX/CSV). */
+export const SUPPORTED_UPLOAD_MIME_TYPES = [
+	"application/pdf",
+	"text/html",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"text/csv",
+	"application/csv",
+] as const
+
+/** Extension fallback: browsers leave File.type empty for some local files. */
+export const SUPPORTED_UPLOAD_EXTENSIONS = [".pdf", ".html", ".htm", ".docx", ".csv"] as const
+
+/** Value for the file input's `accept` attribute. */
+export const UPLOAD_ACCEPT = [...SUPPORTED_UPLOAD_MIME_TYPES, ...SUPPORTED_UPLOAD_EXTENSIONS].join(
+	","
+)
+
+export function isSupportedUploadFile(file: File): boolean {
+	const mime = (file.type || "").split(";")[0]?.trim().toLowerCase() ?? ""
+	if ((SUPPORTED_UPLOAD_MIME_TYPES as readonly string[]).includes(mime)) return true
+	const name = file.name.toLowerCase()
+	return SUPPORTED_UPLOAD_EXTENSIONS.some(extension => name.endsWith(extension))
+}
 
 // UI-facing document shape: dates arrive as ISO strings over JSON.
 export type CorpusDocumentUi = {

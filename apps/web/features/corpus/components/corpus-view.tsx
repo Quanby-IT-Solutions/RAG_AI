@@ -32,7 +32,9 @@ import {
 } from "@/core/components/ui/table"
 import {
 	isPermissionError,
-	MAX_PDF_UPLOAD_BYTES,
+	isSupportedUploadFile,
+	MAX_UPLOAD_BYTES,
+	UPLOAD_ACCEPT,
 	useCorpusDocumentsQuery,
 	useUploadDocumentMutation,
 	type CorpusDocumentUi,
@@ -52,7 +54,11 @@ function formatTimestamp(iso: string): string {
 }
 
 export function CorpusView() {
-	const { data: documents, isLoading, isError, error } = useCorpusDocumentsQuery()
+	// isPending (not isLoading): during the persisted-cache restore the query
+	// is pending with fetchStatus "idle", so isLoading is false on the client's
+	// FIRST render while the server rendered the skeleton — a hydration
+	// mismatch. isPending is true in both passes.
+	const { data: documents, isPending, isError, error } = useCorpusDocumentsQuery()
 	const upload = useUploadDocumentMutation()
 	const [clientError, setClientError] = useState<string | null>(null)
 	const fileInputRef = useRef<HTMLInputElement>(null)
@@ -88,13 +94,13 @@ export function CorpusView() {
 		if (!file) return
 
 		// Client-side hints; the gateway (Multer) and the RAG service both
-		// re-enforce PDF-only and the 25 MB cap.
-		if (file.type !== "application/pdf") {
-			setClientError("Only PDF files are accepted.")
+		// re-enforce the type allow-list and the 25 MB cap.
+		if (!isSupportedUploadFile(file)) {
+			setClientError("Only PDF, HTML, DOCX, and CSV files are accepted.")
 			event.target.value = ""
 			return
 		}
-		if (file.size > MAX_PDF_UPLOAD_BYTES) {
+		if (file.size > MAX_UPLOAD_BYTES) {
 			setClientError("This file exceeds the 25 MB upload limit.")
 			event.target.value = ""
 			return
@@ -118,15 +124,15 @@ export function CorpusView() {
 			<PageHeader
 				icon={FolderLibraryIcon}
 				title="Corpus"
-				description="Upload PDF sources and track their ingestion status."
+				description="Upload PDF, HTML, DOCX, or CSV sources and track their ingestion status."
 			/>
 
 			<Card>
 				<CardHeader className="gap-2">
 					<CardTitle className="text-base">Upload a document</CardTitle>
 					<CardDescription>
-						Single PDF, up to 25 MB. Re-uploading identical content is idempotent; previously
-						failed documents are retried.
+						Single PDF, HTML, DOCX, or CSV file, up to 25 MB. Re-uploading identical content is
+						idempotent; previously failed documents are retried.
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="flex flex-col gap-2">
@@ -134,10 +140,10 @@ export function CorpusView() {
 						<Input
 							ref={fileInputRef}
 							type="file"
-							accept="application/pdf"
+							accept={UPLOAD_ACCEPT}
 							onChange={handleFileChange}
 							disabled={upload.isPending}
-							aria-label="Upload PDF"
+							aria-label="Upload document"
 						/>
 						{upload.isPending ? (
 							<span className="text-muted-foreground flex items-center gap-1 text-xs whitespace-nowrap">
@@ -164,7 +170,7 @@ export function CorpusView() {
 				</CardContent>
 			</Card>
 
-			{isLoading ? (
+			{isPending ? (
 				<div className="flex flex-col gap-2">
 					<Skeleton className="h-10 w-full" />
 					<Skeleton className="h-10 w-full" />

@@ -18,6 +18,8 @@ dependencies = [
     "openai>=1.60",
     "pypdf>=5.1",
     "python-multipart>=0.0.20",
+    "docx2txt>=0.9",
+    "beautifulsoup4>=4.15.0",
 ]
 
 [dependency-groups]

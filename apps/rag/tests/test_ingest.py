@@ -365,7 +365,7 @@ async def test_corrupt_pdf_marked_failed_with_reason(app, repository):
 async def test_chunks_written_with_pinned_model_and_document_indexed(
     app, repository, embeddings, monkeypatch
 ):
-    monkeypatch.setattr("app.ingest._normalize_pdf", fake_two_page_normalize)
+    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
     pdf = make_pdf_bytes()
 
     response = await post_ingest(app, token=make_token(), content=pdf)
@@ -400,7 +400,7 @@ async def test_chunks_written_with_pinned_model_and_document_indexed(
 async def test_embedding_calls_are_batched_one_call_for_n_chunks(
     app, repository, embeddings, monkeypatch
 ):
-    monkeypatch.setattr("app.ingest._normalize_pdf", fake_two_page_normalize)
+    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
 
     response = await post_ingest(app, token=make_token(), content=make_pdf_bytes())
 
@@ -414,7 +414,7 @@ async def test_embedding_calls_are_batched_one_call_for_n_chunks(
 async def test_reindexing_same_document_keeps_chunk_count_stable(
     app, repository, embeddings, monkeypatch
 ):
-    monkeypatch.setattr("app.ingest._normalize_pdf", fake_two_page_normalize)
+    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
     pdf = make_pdf_bytes()
 
     first = await post_ingest(app, token=make_token(), content=pdf)
@@ -438,7 +438,7 @@ async def test_reindexing_same_document_keeps_chunk_count_stable(
 async def test_embed_failure_marks_document_failed_not_stuck_processing(
     app, repository, embeddings, monkeypatch
 ):
-    monkeypatch.setattr("app.ingest._normalize_pdf", fake_two_page_normalize)
+    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
     embeddings.fail = True
 
     response = await post_ingest(app, token=make_token(), content=make_pdf_bytes())
@@ -459,7 +459,7 @@ async def test_embed_failure_marks_document_failed_not_stuck_processing(
 
 
 async def test_chunk_write_failure_marks_document_failed(app, repository, embeddings, monkeypatch):
-    monkeypatch.setattr("app.ingest._normalize_pdf", fake_two_page_normalize)
+    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
     repository.fail_index = True
 
     response = await post_ingest(app, token=make_token(), content=make_pdf_bytes())
@@ -468,3 +468,110 @@ async def test_chunk_write_failure_marks_document_failed(app, repository, embedd
     assert body["status"] == "failed"
     assert "chunks write failed" in body["error"]
     assert repository.rows[body["contentHash"]]["status"] == "failed"
+
+
+# -------------------------------------------------------- IN-3 loader formats
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+async def test_html_upload_indexes_end_to_end(app, repository, embeddings):
+    html = (
+        b"<html><head><title>Handbook</title></head><body>"
+        + b"<p>" + b"Vacation policy details. " * 80 + b"</p>"
+        + b"<script>ignore()</script></body></html>"
+    )
+    response = await post_ingest(
+        app, token=make_token(), content=html, content_type="text/html", filename="handbook.html"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "indexed"
+    assert body["docType"] == "html"
+    assert body["sourceUri"] == "upload://handbook.html"
+    assert body["chunkCount"] > 0
+
+    row = repository.rows[body["contentHash"]]
+    assert row["metadata"]["title"] == "Handbook"
+    assert "ignore()" not in row["metadata"]["text"]
+    # Same {text, source, metadata} shape as PDF -> same downstream pipeline.
+    assert len(embeddings.calls) == 1  # one batched call, never per-chunk
+
+
+async def test_docx_upload_indexes_end_to_end(app, repository, embeddings):
+    from tests.test_loaders import make_docx_bytes
+
+    docx = make_docx_bytes("Remote work policy. " * 100)
+    response = await post_ingest(
+        app, token=make_token(), content=docx, content_type=DOCX_MIME, filename="policy.docx"
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "indexed"
+    assert body["docType"] == "docx"
+    assert body["chunkCount"] > 0
+    assert len(embeddings.calls) == 1
+
+
+async def test_csv_upload_preserves_sections_into_chunks(app, repository, embeddings):
+    rows = "\n".join(f"item {i},{'description ' * 30}{i}" for i in range(1, 120))
+    csv_bytes = f"item,description\n{rows}\n".encode()
+    response = await post_ingest(
+        app, token=make_token(), content=csv_bytes, content_type="text/csv", filename="items.csv"
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "indexed"
+    assert body["docType"] == "csv"
+
+    row = repository.rows[body["contentHash"]]
+    assert row["metadata"]["columns"] == ["item", "description"]
+    assert row["metadata"]["rowCount"] == 119
+    # Row/column structure preserved in text form.
+    assert "item: item 1 |" in row["metadata"]["text"]
+    # Section metadata per row-group flows through to indexed chunks.
+    sections = {chunk["metadata"].get("section") for chunk in repository.chunks.values()}
+    assert "rows 1-50" in sections
+    assert "rows 51-100" in sections
+
+
+async def test_corrupt_docx_marked_failed_with_reason(app, repository):
+    response = await post_ingest(
+        app, token=make_token(), content=b"not a zip", content_type=DOCX_MIME, filename="bad.docx"
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "failed"
+    assert "DOCX parse failed" in body["error"]
+    assert repository.rows[body["contentHash"]]["status"] == "failed"
+
+
+async def test_unsupported_type_rejected_with_supported_list(app, repository):
+    response = await post_ingest(
+        app, token=make_token(), content=b"plain", content_type="text/plain", filename="notes.txt"
+    )
+
+    assert response.status_code == 415
+    detail = response.json()["detail"]
+    assert "text/plain" in detail
+    assert "text/csv" in detail and "text/html" in detail  # supported list shown
+    assert repository.rows == {}  # rejected at the API, no partial rows
+
+
+async def test_identical_content_dedups_across_formats(app, repository):
+    """Flow A dedup is format-agnostic: the same bytes re-uploaded under any
+    supported type no-op on content_hash."""
+    csv_bytes = b"name,role\nAda,Engineer\n"
+    first = await post_ingest(
+        app, token=make_token(), content=csv_bytes, content_type="text/csv", filename="a.csv"
+    )
+    assert first.json()["reused"] is False
+
+    second = await post_ingest(
+        app, token=make_token(), content=csv_bytes, content_type="text/csv", filename="copy.csv"
+    )
+    assert second.json()["reused"] is True
+    assert len(repository.rows) == 1  # no duplicate row

@@ -14,7 +14,7 @@ from typing import Any
 CHUNK_SIZE = 1000
 # 150/1000 = 15% — inside the ticket's 10-20% overlap band.
 CHUNK_OVERLAP = 150
-# Must match the page joiner in app.ingest._normalize_pdf.
+# Must match the segment joiner in app.loaders (SEGMENT_SEPARATOR).
 PAGE_SEPARATOR = "\n\n"
 
 
@@ -38,11 +38,14 @@ def _chunk_hash(document_hash: str, chunk_index: int, content: str) -> str:
 def _page_segments(
     text: str, pages: list[dict[str, Any]] | None
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Rebuild (page_text, {page: n}) slices from IN-1's per-page char counts.
+    """Rebuild (segment_text, metadata) slices from the loader's char counts.
 
-    The normalized payload stores only the joined text plus each page's char
-    length; the joiner is PAGE_SEPARATOR, so exact offsets are recoverable.
-    Falls back to one unlabelled segment when the counts don't line up."""
+    The normalized payload stores only the joined text plus each segment's
+    char length; the joiner is PAGE_SEPARATOR, so exact offsets are
+    recoverable. Every descriptor key except `chars` becomes chunk metadata —
+    PDF segments carry {page: n} (IN-1 shape, unchanged), CSV row-groups carry
+    {section: "rows a-b"} (IN-3). Falls back to one unlabelled segment when
+    the counts don't line up."""
     if not pages:
         return [(text, {})]
 
@@ -54,7 +57,10 @@ def _page_segments(
             return [(text, {})]
         if position > 0:
             offset += len(PAGE_SEPARATOR)
-        segments.append((text[offset : offset + chars], {"page": page.get("page", position)}))
+        metadata = {key: value for key, value in page.items() if key != "chars"}
+        if not metadata:
+            metadata = {"page": position}
+        segments.append((text[offset : offset + chars], metadata))
         offset += chars
     if offset != len(text):
         return [(text, {})]

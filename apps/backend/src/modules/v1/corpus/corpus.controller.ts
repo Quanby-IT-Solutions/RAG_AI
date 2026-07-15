@@ -18,7 +18,7 @@ import { RequirePermissions } from "@/shared/decorators/require-permissions.deco
 import { StrictThrottle } from "@/shared/decorators/strict-throttle.decorator"
 
 import { CorpusService } from "./corpus.service"
-import { pdfUploadOptions } from "./corpus.upload-options"
+import { documentUploadOptions } from "./corpus.upload-options"
 import { RagGatewayService } from "./rag-gateway.service"
 
 /**
@@ -39,8 +39,9 @@ export class CorpusController {
 	) {}
 
 	/**
-	 * Upload one PDF and hand it to the Python RAG service to normalize +
-	 * register (Flow A steps 1-3). Requires BOTH dotted keys — the R1 combined
+	 * Upload one document (PDF/HTML/DOCX/CSV — IN-3) and hand it to the Python
+	 * RAG service to normalize + register (Flow A steps 1-3). Requires BOTH
+	 * dotted keys — the R1 combined
 	 * upload+index action (cross-artifact decision C4); RbacGuard fails closed
 	 * and audits denials.
 	 *
@@ -51,7 +52,7 @@ export class CorpusController {
 	@Post("v1/corpus/documents")
 	@StrictThrottle()
 	@RequirePermissions("corpus.documents.upload", "corpus.ingest.run")
-	@UseInterceptors(FileInterceptor("file", pdfUploadOptions))
+	@UseInterceptors(FileInterceptor("file", documentUploadOptions))
 	async uploadDocument(
 		@UploadedFile() file: Express.Multer.File | undefined,
 		@Session() session: UserSession,
@@ -59,7 +60,7 @@ export class CorpusController {
 	) {
 		if (!file) {
 			throw new BadRequestException(
-				'A PDF file is required: send multipart/form-data with a single "file" field.'
+				'A document file is required: send multipart/form-data with a single "file" field.'
 			)
 		}
 
