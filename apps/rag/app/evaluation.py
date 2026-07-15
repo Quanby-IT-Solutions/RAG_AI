@@ -285,6 +285,11 @@ async def run_retrieval_eval(
         "mmrLambda": settings.mmr_lambda if settings.mmr_enabled else None,
         # RT-6: parent-doc swap changes WHAT is returned, so runs record it.
         "parentDoc": settings.parent_doc_enabled,
+        # RT-7: compression happens post-retrieval (EV-3 comparisons read it).
+        "compression": settings.compression_enabled,
+        "compressionProvider": settings.compression_provider
+        if settings.compression_enabled
+        else None,
     }
 
     run_id = await repository.create_run(

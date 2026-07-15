@@ -151,6 +151,20 @@ class Settings(BaseSettings):
     parent_doc_enabled: bool = Field(alias="PARENT_DOC_ENABLED", default=False)
     parent_group_size: int = Field(alias="PARENT_GROUP_SIZE", default=3, ge=2, le=10)
 
+    # --- Contextual compression (RT-7) — retrieve → compress → budget (order
+    # contractual). Off by default; provider "embeddings" (sentence cosine
+    # filter, no extra model) or "llm" (cheap-fast extraction).
+    compression_enabled: bool = Field(alias="COMPRESSION_ENABLED", default=False)
+    compression_provider: Literal["embeddings", "llm"] = Field(
+        alias="COMPRESSION_PROVIDER", default="embeddings"
+    )
+    compression_similarity_threshold: float = Field(
+        alias="COMPRESSION_SIMILARITY_THRESHOLD", default=0.25, ge=0, le=1
+    )
+    compression_timeout_seconds: float = Field(
+        alias="COMPRESSION_TIMEOUT_SECONDS", default=10.0, gt=0
+    )
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)

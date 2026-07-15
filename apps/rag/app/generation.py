@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.budget import current_context_budget, select_within_budget
+from app.compression import Compressor, build_compressor, compress_with_fallback
 from app.config import Settings
 from app.conversations import ConversationsRepository
 from app.providers import (
@@ -138,6 +139,7 @@ class GenerationService:
         retrieval: RetrievalService,
         chat_client: "ModelRouter | SingleClientRouter | ChatModelClient",
         repository: ConversationsRepository,
+        compressor: "Compressor | None" = None,
     ) -> None:
         self._settings = settings
         self._retrieval = retrieval
@@ -147,6 +149,8 @@ class GenerationService:
             chat_client if hasattr(chat_client, "route") else SingleClientRouter(chat_client)
         )
         self._repository = repository
+        # RT-7: post-retrieval contextual compression (None when off).
+        self._compressor = compressor
 
     async def _build_citations(
         self, answer: str, chunks: list[dict[str, Any]]
@@ -225,6 +229,25 @@ class GenerationService:
             for chunk in chunks
         ]
 
+        # ── RT-7 compress stage (retrieve → compress → budget, contractual):
+        # each chunk shrinks to its query-relevant sentences; chunk identity
+        # is preserved so citations still resolve to the ORIGINAL chunk.
+        # Irrelevant chunks are dropped; any compressor failure falls back to
+        # the uncompressed set, noted in the trace below.
+        compression: dict[str, Any] = {"requested": self._compressor is not None}
+        if self._compressor is not None:
+            compression["provider"] = self._compressor.provider
+            compressed, applied = await compress_with_fallback(
+                self._compressor,
+                query=query,
+                chunks=chunks,
+                timeout_seconds=self._settings.compression_timeout_seconds,
+            )
+            compression["applied"] = applied
+            if applied:
+                compression["dropped"] = len(chunks) - len(compressed)
+                chunks = compressed
+
         # Budget resolved per request so a config change applies without
         # restart; the order (rank -> select) is contractual per §5.3.
         budget = current_context_budget(self._settings)
@@ -243,7 +266,9 @@ class GenerationService:
         # independent of generation (PRD constraint).
         logger.info(
             "generation.used_chunks %s",
-            json.dumps({"stage": "used", **selection, "chunks": used_record}),
+            json.dumps(
+                {"stage": "used", **selection, "compression": compression, "chunks": used_record}
+            ),
         )
 
         messages: list[dict[str, str]] | None = None
@@ -565,6 +590,22 @@ class ChatRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+def get_compressor(request: Request) -> "Compressor | None":
+    """RT-7 seam: config-built compressor (None when COMPRESSION_ENABLED off).
+    The embeddings filter reuses the pinned per-app EmbeddingsClient; the LLM
+    extractor uses the cheap-fast OpenAI client."""
+    settings = request.app.state.settings
+    if not settings.compression_enabled:
+        return None
+    from app.ingest import get_embeddings_client
+    from app.providers import OpenAIChatClient
+
+    llm_client = OpenAIChatClient(settings) if settings.compression_provider == "llm" else None
+    return build_compressor(
+        settings, embeddings=get_embeddings_client(request), llm_client=llm_client
+    )
+
+
 @router.post("/chat")
 async def chat(
     payload: ChatRequest,
@@ -580,6 +621,7 @@ async def chat(
         retrieval=retrieval,
         chat_client=chat_client,
         repository=repository,
+        compressor=get_compressor(request),
     )
     try:
         return await service.answer(
