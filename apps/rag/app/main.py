@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 
-from app import generation, ingest, retrieval
+from app import evaluation, generation, ingest, retrieval
 from app import health as health_checks
 from app.config import Settings, get_settings
 from app.documents import DocumentsRepository
@@ -65,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ingest.router)
     app.include_router(generation.router)
     app.include_router(retrieval.router)
+    app.include_router(evaluation.router)
 
     @app.get("/health")
     async def health(response: Response) -> dict:

@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import type {
 	CreateGoldenItemRequest,
+	EvalRun,
+	ExecuteEvalRunRequest,
 	GoldenChunkSearchRequest,
 	GoldenItem,
 	GoldenSetExport,
@@ -120,5 +122,58 @@ export function useSearchChunksMutation() {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
+	})
+}
+
+// ------------------------------------------------------------- EV-2: runs
+
+/** Wire shape: dates arrive as ISO strings over JSON. */
+export type EvalRunUi = Omit<EvalRun, "createdAt" | "finishedAt"> & {
+	createdAt: string
+	finishedAt: string | null
+}
+export type EvalRunSummaryUi = Omit<EvalRunUi, "perItem">
+
+export interface EvalRunComparisonUi {
+	base: EvalRunSummaryUi
+	candidate: EvalRunSummaryUi
+	deltas: Record<string, number>
+}
+
+export const evalRunKeys = {
+	list: ["eval", "runs"] as const,
+	detail: (id: string) => ["eval", "runs", id] as const,
+	compare: (baseId: string, candidateId: string) =>
+		["eval", "runs", "compare", baseId, candidateId] as const,
+}
+
+export function useEvalRunsQuery() {
+	return useQuery({
+		queryKey: evalRunKeys.list,
+		queryFn: () => apiFetch<EvalRunSummaryUi[]>("/eval/runs"),
+	})
+}
+
+export function useExecuteEvalRunMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: (input: ExecuteEvalRunRequest) =>
+			apiFetch<EvalRunUi>("/eval/runs", {
+				method: "POST",
+				body: JSON.stringify(input),
+			}),
+		onSettled: () => {
+			// Failed runs are persisted too — refresh either way.
+			void queryClient.invalidateQueries({ queryKey: evalRunKeys.list })
+		},
+	})
+}
+
+export function useEvalRunComparisonQuery(baseId: string | null, candidateId: string | null) {
+	return useQuery({
+		queryKey: evalRunKeys.compare(baseId ?? "-", candidateId ?? "-"),
+		queryFn: () =>
+			apiFetch<EvalRunComparisonUi>(`/eval/runs/${baseId}/compare/${candidateId}`),
+		enabled: Boolean(baseId && candidateId && baseId !== candidateId),
 	})
 }

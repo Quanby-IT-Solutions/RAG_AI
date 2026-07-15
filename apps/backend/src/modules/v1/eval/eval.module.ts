@@ -5,11 +5,12 @@ import { RbacModule } from "@/common/rbac/rbac.module"
 
 import { RagGatewayService } from "../corpus/rag-gateway.service"
 import { EvalGoldenService } from "./eval-golden.service"
+import { EvalRunsService } from "./eval-runs.service"
 import { EvalController } from "./eval.controller"
 
 @Module({
 	imports: [RbacModule, AuditModule],
 	controllers: [EvalController],
-	providers: [EvalGoldenService, RagGatewayService],
+	providers: [EvalGoldenService, EvalRunsService, RagGatewayService],
 })
 export class EvalModule {}

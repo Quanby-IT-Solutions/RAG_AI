@@ -410,3 +410,30 @@ test.describe("golden evaluation set console (EV-1)", () => {
 		await expect(row.getByText("retired", { exact: true })).toBeVisible({ timeout: 15_000 })
 	})
 })
+
+test.describe("retrieval eval runs console (EV-2)", () => {
+	test("triggers a run, lists metrics, and compares two runs", async ({ page }) => {
+		await page.goto("/eval")
+		const runsTable = () => page.getByTestId("eval-runs-table")
+		await expect(page.getByRole("button", { name: "Run evaluation" })).toBeVisible({
+			timeout: 15_000,
+		})
+
+		await page.getByRole("button", { name: "Run evaluation" }).click()
+		// The run scores the real pipeline (embeddings + SQL), allow time.
+		await expect(runsTable()).toBeVisible({ timeout: 60_000 })
+		const firstRow = runsTable().locator("tbody tr").first()
+		await expect(firstRow.getByText("completed")).toBeVisible({ timeout: 60_000 })
+
+		// Two selections produce the per-metric delta panel.
+		const selectButtons = runsTable().getByRole("button", { name: /Select run/ })
+		await selectButtons.nth(0).click()
+		await selectButtons.nth(0).click() // second row shifted; re-query below
+		const remaining = runsTable().getByRole("button", { name: /Select run/ })
+		if ((await remaining.count()) > 0) {
+			await remaining.first().click()
+		}
+		await expect(page.getByTestId("run-comparison")).toBeVisible({ timeout: 30_000 })
+		await expect(page.getByTestId("run-comparison").getByText(/hitRate/)).toBeVisible()
+	})
+})

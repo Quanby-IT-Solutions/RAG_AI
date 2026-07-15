@@ -4,7 +4,7 @@ import { implement } from "@orpc/server"
 import { Session, type UserSession } from "@thallesp/nestjs-better-auth"
 import type { Request } from "express"
 
-import type { GoldenChunkCandidate } from "@repo/contracts"
+import type { EvalRun, GoldenChunkCandidate } from "@repo/contracts"
 
 import { RbacService } from "@/common/rbac/rbac.service"
 import { v1 } from "@/config/api-versions.config"
@@ -13,6 +13,7 @@ import { StrictThrottle } from "@/shared/decorators/strict-throttle.decorator"
 
 import { RagGatewayService, toORPCError } from "../corpus/rag-gateway.service"
 import { EvalGoldenService } from "./eval-golden.service"
+import { EvalRunsService } from "./eval-runs.service"
 
 /**
  * Golden evaluation set console (EV-1). Every route requires
@@ -24,6 +25,7 @@ import { EvalGoldenService } from "./eval-golden.service"
 export class EvalController {
 	constructor(
 		private readonly evalGoldenService: EvalGoldenService,
+		private readonly evalRunsService: EvalRunsService,
 		private readonly ragGatewayService: RagGatewayService,
 		private readonly rbacService: RbacService
 	) {}
@@ -98,6 +100,58 @@ export class EvalController {
 				content: chunk.content,
 				score: chunk.score ?? null,
 			}))
+		})
+	}
+
+	// ---------------------------------------------------------- EV-2: runs
+
+	@StrictThrottle()
+	@RequirePermissions("eval.runs.execute")
+	@Implement(v1.eval.runs.execute)
+	async executeRun(
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number }
+	) {
+		return implement(v1.eval.runs.execute).handler(async ({ input }) => {
+			const access = await this.rbacService.getUserAccess(session.user.id)
+			const correlationId = String(request.id ?? crypto.randomUUID())
+
+			const run = await this.ragGatewayService
+				.executeRetrievalEval({
+					k: input.k,
+					vectorWeight: input.vectorWeight,
+					keywordWeight: input.keywordWeight,
+					userId: session.user.id,
+					permissions: access.permissions,
+					requestId: correlationId,
+					traceId: correlationId,
+				})
+				.catch(toORPCError)
+			return run as EvalRun
+		})
+	}
+
+	@RequirePermissions("eval.runs.execute")
+	@Implement(v1.eval.runs.list)
+	async listRuns() {
+		return implement(v1.eval.runs.list).handler(async () => {
+			return this.evalRunsService.list()
+		})
+	}
+
+	@RequirePermissions("eval.runs.execute")
+	@Implement(v1.eval.runs.get)
+	async getRun() {
+		return implement(v1.eval.runs.get).handler(async ({ input }) => {
+			return this.evalRunsService.get(input.id)
+		})
+	}
+
+	@RequirePermissions("eval.runs.execute")
+	@Implement(v1.eval.runs.compare)
+	async compareRuns() {
+		return implement(v1.eval.runs.compare).handler(async ({ input }) => {
+			return this.evalRunsService.compare(input.baseId, input.candidateId)
 		})
 	}
 }

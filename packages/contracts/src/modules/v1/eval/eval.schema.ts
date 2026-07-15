@@ -76,3 +76,59 @@ export type UpdateGoldenItemRequest = z.infer<typeof UpdateGoldenItemRequestSche
 export type GoldenSetExport = z.infer<typeof GoldenSetExportSchema>
 export type GoldenChunkSearchRequest = z.infer<typeof GoldenChunkSearchRequestSchema>
 export type GoldenChunkCandidate = z.infer<typeof GoldenChunkCandidateSchema>
+
+// ---------------------------------------------------------------- EV-2: runs
+
+export const EvalRunStatusSchema = z.enum(["running", "completed", "failed"])
+export const EvalRunKindSchema = z.enum(["retrieval", "generation"])
+
+/** Per-golden-item score entry; stale items appear with skipped=true. */
+export const EvalRunItemSchema = z.object({
+	goldenItemId: z.string(),
+	question: z.string(),
+	skipped: z.boolean(),
+	staleHashes: z.array(z.string()).optional(),
+	retrievedHashes: z.array(z.string()).optional(),
+	hit: z.number().optional(),
+	reciprocalRank: z.number().optional(),
+	precisionAtK: z.number().optional(),
+	recallAtK: z.number().optional(),
+})
+
+export const EvalRunSchema = z.object({
+	id: z.string().uuid(),
+	kind: EvalRunKindSchema,
+	status: EvalRunStatusSchema,
+	gitSha: z.string(),
+	/** Exact snapshot of what was evaluated (k, weights, toggles). */
+	config: z.record(z.string(), z.unknown()),
+	metrics: z.record(z.string(), z.number()).nullable(),
+	perItem: z.array(EvalRunItemSchema).nullable(),
+	error: z.string().nullable(),
+	triggeredBy: z.string(),
+	createdAt: isoDate,
+	finishedAt: isoDate.nullable(),
+})
+
+export const EvalRunSummarySchema = EvalRunSchema.omit({ perItem: true })
+
+export const ExecuteEvalRunRequestSchema = z.object({
+	k: z.number().int().min(1).max(50).optional(),
+	vectorWeight: z.number().min(0).optional(),
+	keywordWeight: z.number().min(0).optional(),
+})
+
+/** Per-metric delta between two runs (candidate − base). */
+export const EvalRunComparisonSchema = z.object({
+	base: EvalRunSummarySchema,
+	candidate: EvalRunSummarySchema,
+	deltas: z.record(z.string(), z.number()),
+})
+
+export type EvalRunStatus = z.infer<typeof EvalRunStatusSchema>
+export type EvalRunKind = z.infer<typeof EvalRunKindSchema>
+export type EvalRunItem = z.infer<typeof EvalRunItemSchema>
+export type EvalRun = z.infer<typeof EvalRunSchema>
+export type EvalRunSummary = z.infer<typeof EvalRunSummarySchema>
+export type ExecuteEvalRunRequest = z.infer<typeof ExecuteEvalRunRequestSchema>
+export type EvalRunComparison = z.infer<typeof EvalRunComparisonSchema>

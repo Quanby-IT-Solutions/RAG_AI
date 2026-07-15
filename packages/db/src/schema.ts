@@ -473,6 +473,35 @@ export const goldenItems = createTable(
 	t => [index("golden_items_status_idx").on(t.status)]
 )
 
+/**
+ * One evaluation run (DOMAIN-MODEL `eval_runs`, EV-2). Written by the Python
+ * RAG service (the runner executes against the REAL retrieval pipeline —
+ * Flow B stages, not a reimplementation); read by the gateway for the runs
+ * console, comparisons, the EV-4 gate, and RP-3 trending.
+ *
+ * `config` snapshots exactly what was evaluated (k, weights, toggles) and
+ * `gitSha` pins the code version. `metrics` holds the aggregates; `perItem`
+ * the per-golden-item scores (stale items are SKIPPED and counted, never
+ * silently perfect).
+ */
+export const evalRuns = createTable(
+	"eval_runs",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		kind: t.text("kind", { enum: ["retrieval", "generation"] }).notNull(),
+		status: t.text("status", { enum: ["running", "completed", "failed"] }).notNull(),
+		gitSha: t.text("git_sha").notNull(),
+		config: t.jsonb("config").$type<Record<string, unknown>>().notNull(),
+		metrics: t.jsonb("metrics").$type<Record<string, number>>(),
+		perItem: t.jsonb("per_item").$type<unknown>(),
+		error: t.text("error"),
+		triggeredBy: t.text("triggered_by").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+		finishedAt: t.timestamp("finished_at", { withTimezone: true }),
+	}),
+	t => [index("eval_runs_created_at_idx").on(t.createdAt)]
+)
+
 // ============================================================================
 // RELATIONS
 // ============================================================================
@@ -574,6 +603,7 @@ export const schema = Object.assign(
 		conversations,
 		messages,
 		goldenItems,
+		evalRuns,
 	},
 	relations
 )

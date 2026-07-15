@@ -118,6 +118,11 @@ export {
 	GoldenSetExportSchema,
 	GoldenChunkSearchRequestSchema,
 	GoldenChunkCandidateSchema,
+	EvalRunSchema,
+	EvalRunSummarySchema,
+	EvalRunItemSchema,
+	EvalRunComparisonSchema,
+	ExecuteEvalRunRequestSchema,
 } from "./modules/v1/eval/eval.schema.js"
 export type {
 	GoldenItem,
@@ -127,6 +132,13 @@ export type {
 	GoldenSetExport,
 	GoldenChunkSearchRequest,
 	GoldenChunkCandidate,
+	EvalRun,
+	EvalRunSummary,
+	EvalRunItem,
+	EvalRunStatus,
+	EvalRunKind,
+	EvalRunComparison,
+	ExecuteEvalRunRequest,
 } from "./modules/v1/eval/eval.schema.js"
 
 // Current-user access schemas

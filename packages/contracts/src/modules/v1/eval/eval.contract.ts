@@ -3,6 +3,10 @@ import { z } from "zod"
 
 import {
 	CreateGoldenItemRequestSchema,
+	EvalRunComparisonSchema,
+	EvalRunSchema,
+	EvalRunSummarySchema,
+	ExecuteEvalRunRequestSchema,
 	GoldenChunkCandidateSchema,
 	GoldenChunkSearchRequestSchema,
 	GoldenItemSchema,
@@ -76,5 +80,46 @@ export const evalContract = {
 			})
 			.input(GoldenChunkSearchRequestSchema)
 			.output(z.array(GoldenChunkCandidateSchema)),
+	},
+	// EV-2: retrieval metrics runs. All routes require `eval.runs.execute`.
+	runs: {
+		execute: oc
+			.route({
+				method: "POST",
+				path: "/eval/runs",
+				summary: "Execute a retrieval eval run",
+				description:
+					"Scores the REAL retrieval pipeline against the active golden set (hit rate, MRR, P@k, R@k). Fails loudly (409) on an empty or fully-stale set.",
+				tags: ["Evaluation"],
+			})
+			.input(ExecuteEvalRunRequestSchema)
+			.output(EvalRunSchema),
+		list: oc
+			.route({
+				method: "GET",
+				path: "/eval/runs",
+				summary: "List eval runs (newest first)",
+				tags: ["Evaluation"],
+			})
+			.output(z.array(EvalRunSummarySchema)),
+		get: oc
+			.route({
+				method: "GET",
+				path: "/eval/runs/{id}",
+				summary: "One eval run with per-item scores",
+				tags: ["Evaluation"],
+			})
+			.input(z.object({ id: z.string().uuid() }))
+			.output(EvalRunSchema),
+		compare: oc
+			.route({
+				method: "GET",
+				path: "/eval/runs/{baseId}/compare/{candidateId}",
+				summary: "Per-metric deltas between two runs",
+				description: "candidate − base for every shared numeric metric.",
+				tags: ["Evaluation"],
+			})
+			.input(z.object({ baseId: z.string().uuid(), candidateId: z.string().uuid() }))
+			.output(EvalRunComparisonSchema),
 	},
 }

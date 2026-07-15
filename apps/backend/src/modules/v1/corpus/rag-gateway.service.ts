@@ -219,6 +219,43 @@ export class RagGatewayService {
 		})
 	}
 
+	/**
+	 * Execute a retrieval eval run (EV-2): POST
+	 * {RAG_SERVICE_URL}/internal/eval/retrieval. The Python runner scores the
+	 * REAL retrieval pipeline against the golden set and persists eval_runs;
+	 * an empty/fully-stale set surfaces as 409 (fail loud).
+	 */
+	async executeRetrievalEval(input: {
+		k?: number
+		vectorWeight?: number
+		keywordWeight?: number
+		userId: string
+		permissions: readonly string[]
+		requestId: string
+		traceId: string
+	}): Promise<unknown> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: input.permissions,
+			requestId: input.requestId,
+			traceId: input.traceId,
+		})
+
+		return this.forward("/internal/eval/retrieval", {
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+				"x-request-id": input.requestId,
+			},
+			body: JSON.stringify({
+				...(input.k !== undefined && { k: input.k }),
+				...(input.vectorWeight !== undefined && { vectorWeight: input.vectorWeight }),
+				...(input.keywordWeight !== undefined && { keywordWeight: input.keywordWeight }),
+			}),
+			failureMessage: "RAG eval run failed",
+		})
+	}
+
 	/** Shared POST transport: hard timeout + uniform error mapping. */
 	private async forward(
 		path: string,

@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # --- Chat history (CH-3) — retention window for the purge job ---
     chat_retention_days: int = Field(alias="CHAT_RETENTION_DAYS", default=365, ge=1)
 
+    # --- Evaluation (EV-2) ---
+    # Code-version stamp recorded on every eval_runs row. Set by the deploy
+    # environment (docker build arg / CI); "unknown" flags an unstamped run.
+    git_sha: str = Field(alias="GIT_SHA", default="unknown")
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)

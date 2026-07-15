@@ -73,7 +73,7 @@ export const navItems: readonly DashboardNavItem[] = [
 		href: "/eval",
 		icon: CheckmarkBadge01Icon,
 		section: "Administration",
-		requiredPermission: "eval.golden.manage",
+		requiredPermission: ["eval.golden.manage", "eval.runs.execute"],
 	},
 	{
 		// Integrator API keys console (SC-3). Keys act with the owner's
