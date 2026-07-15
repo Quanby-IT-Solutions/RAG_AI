@@ -62,6 +62,8 @@ export {
 	IngestionJobStatsSchema,
 	IngestionJobStatusSchema,
 	JobDocumentSchema,
+	InspectedChunkSchema,
+	ChunkInspectionSchema,
 } from "./modules/v1/corpus/corpus.schema.js"
 export type {
 	CorpusDocument,
@@ -72,6 +74,8 @@ export type {
 	IngestionJobStats,
 	IngestionJobStatus,
 	JobDocument,
+	InspectedChunk,
+	ChunkInspection,
 } from "./modules/v1/corpus/corpus.schema.js"
 
 // Chat (generation) contract + schemas

@@ -454,3 +454,21 @@ test.describe("chat retrieval filters (RT-4)", () => {
 		await expect(page.getByText(/I don't know/).first()).toBeVisible({ timeout: 60_000 })
 	})
 })
+
+test.describe("chunk-boundary inspection (IN-5)", () => {
+	test("renders a document's chunks with boundaries and metadata badges", async ({ page }) => {
+		await page.goto("/corpus")
+		await expect(page.getByRole("table").first()).toBeVisible({ timeout: 30_000 })
+
+		await page.getByRole("link", { name: /^Inspect chunks of / }).first().click()
+		await expect(page.getByText("Chunk boundaries")).toBeVisible({ timeout: 30_000 })
+
+		const list = page.getByTestId("chunk-boundaries")
+		await expect(list).toBeVisible({ timeout: 30_000 })
+		const items = list.locator("li")
+		expect(await items.count()).toBeGreaterThan(0)
+		// Per-chunk index + size badges render.
+		await expect(items.first().getByText(/^#\d+$/)).toBeVisible()
+		await expect(items.first().getByText(/\d+ chars/)).toBeVisible()
+	})
+})

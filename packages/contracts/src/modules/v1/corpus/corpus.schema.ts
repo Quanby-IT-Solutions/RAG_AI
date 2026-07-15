@@ -101,3 +101,32 @@ export type IngestionJobStats = z.infer<typeof IngestionJobStatsSchema>
 export type IngestionJob = z.infer<typeof IngestionJobSchema>
 export type IngestionJobDetail = z.infer<typeof IngestionJobDetailSchema>
 export type JobDocument = z.infer<typeof JobDocumentSchema>
+
+// ------------------------------------------------- IN-5: chunk inspection
+
+/** One chunk in boundary-inspection order (parents excluded). */
+export const InspectedChunkSchema = z.object({
+	id: z.string().uuid(),
+	chunkIndex: z.number().int(),
+	content: z.string(),
+	contentHash: z.string(),
+	charCount: z.number().int(),
+	/** Chunk-level metadata (page/section) from normalization. */
+	metadata: z.record(z.string(), z.unknown()).nullable(),
+	/** Heuristic: chunk does not END at sentence-ending punctuation. */
+	endsMidSentence: z.boolean(),
+	/** Heuristic: chunk does not START at a sentence beginning. */
+	startsMidSentence: z.boolean(),
+	/** Characters shared verbatim with the END of the previous chunk. */
+	overlapWithPrevious: z.number().int(),
+})
+
+export const ChunkInspectionSchema = z.object({
+	document: DocumentSchema,
+	/** Chunking strategy/fallback info recorded on the document (IN-4). */
+	chunking: z.record(z.string(), z.unknown()).nullable(),
+	chunks: z.array(InspectedChunkSchema),
+})
+
+export type InspectedChunk = z.infer<typeof InspectedChunkSchema>
+export type ChunkInspection = z.infer<typeof ChunkInspectionSchema>

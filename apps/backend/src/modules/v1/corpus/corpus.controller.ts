@@ -88,6 +88,15 @@ export class CorpusController {
 		})
 	}
 
+	// ── Chunk-boundary inspection (IN-5) ─────────────────────────────────────
+	@RequirePermissions("corpus.chunks.inspect")
+	@Implement(v1.corpus.documents.inspectChunks)
+	async inspectChunks() {
+		return implement(v1.corpus.documents.inspectChunks).handler(async ({ input }) => {
+			return this.corpusService.inspectChunks(input.id)
+		})
+	}
+
 	// ── Jobs console (IN-7) — monitored by holders of corpus.ingest.run ──────
 
 	@RequirePermissions("corpus.ingest.run")

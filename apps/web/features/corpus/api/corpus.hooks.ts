@@ -248,3 +248,39 @@ export function useUploadDocumentMutation() {
 		onSettled: () => queryClient.invalidateQueries({ queryKey: corpusKeys.documents }),
 	})
 }
+
+// ---------------------------------------------------- IN-5: chunk inspection
+
+/** Wire shape of ChunkInspection (dates as ISO strings). */
+export interface ChunkInspectionUi {
+	document: CorpusDocumentUi
+	chunking: Record<string, unknown> | null
+	chunks: {
+		id: string
+		chunkIndex: number
+		content: string
+		contentHash: string
+		charCount: number
+		metadata: Record<string, unknown> | null
+		endsMidSentence: boolean
+		startsMidSentence: boolean
+		overlapWithPrevious: number
+	}[]
+}
+
+export function useChunkInspectionQuery(documentId: string | null) {
+	return useQuery({
+		queryKey: ["corpus", "documents", documentId, "chunks"] as const,
+		queryFn: async () => {
+			const response = await fetch(`${API_BASE}/corpus/documents/${documentId}/chunks`, {
+				credentials: "include",
+				headers: { "Content-Type": "application/json" },
+			})
+			if (!response.ok) {
+				throw await parseError(response)
+			}
+			return (await response.json()) as ChunkInspectionUi
+		},
+		enabled: Boolean(documentId),
+	})
+}

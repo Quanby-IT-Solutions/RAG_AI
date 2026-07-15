@@ -1,5 +1,7 @@
 "use client"
 
+import Link from "next/link"
+
 import { useRef, useState } from "react"
 import { FileUploadIcon, FolderLibraryIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -236,6 +238,16 @@ export function CorpusView() {
 									</TableCell>
 									<TableCell className="text-muted-foreground align-top text-xs">
 										{formatTimestamp(document.ingestedAt)}
+									</TableCell>
+									<TableCell className="align-top text-right">
+										{/* IN-5: boundary inspection (page enforces corpus.chunks.inspect). */}
+										<Link
+											href={`/corpus/${document.id}`}
+											className="text-primary text-xs underline"
+											aria-label={`Inspect chunks of ${document.metadata?.originalFilename ?? document.sourceUri}`}
+										>
+											Inspect
+										</Link>
 									</TableCell>
 								</TableRow>
 							))}

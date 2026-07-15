@@ -2,6 +2,7 @@ import { oc } from "@orpc/contract"
 import { z } from "zod"
 
 import {
+	ChunkInspectionSchema,
 	DocumentSchema,
 	IngestionJobDetailSchema,
 	IngestionJobSchema,
@@ -27,6 +28,17 @@ export const corpusContract = {
 				tags: ["Corpus"],
 			})
 			.output(z.array(DocumentSchema)),
+		inspectChunks: oc
+			.route({
+				method: "GET",
+				path: "/corpus/documents/{id}/chunks",
+				summary: "Inspect a document's chunk boundaries",
+				description:
+					"IN-5: chunks in boundary order with mid-sentence heuristics and overlap regions, so bad splits are catchable before they poison retrieval. Requires corpus.chunks.inspect.",
+				tags: ["Corpus"],
+			})
+			.input(z.object({ id: z.string().uuid() }))
+			.output(ChunkInspectionSchema),
 	},
 	jobs: {
 		list: oc
