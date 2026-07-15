@@ -47,7 +47,10 @@ class FakeRedis:
         return True
 
     async def incr(self, key):
-        self.counters[key] = self.counters.get(key, 0) + 1
+        value = int(self.store.get(key, 0)) + 1
+        self.store[key] = str(value)
+        self.counters[key] = value
+        return value
 
     async def mget(self, keys):
         return [self.counters.get(key) for key in keys]
@@ -236,3 +239,72 @@ async def test_miss_populates_the_cache_for_the_next_request(settings):
     second = await service.answer(query="vacation days?", k=None, principal=PRINCIPAL)
     assert second["cached"] is True
     assert len(client.calls) == 1  # only the first request reached the LLM
+
+
+# --------------------------------------------------------------- CP-2 rules
+async def test_ttl_jitter_desynchronizes_expiry(settings):
+    config = settings(CACHE_TTL_SECONDS="1000", CACHE_TTL_JITTER="0.2")
+    values = iter([0.0, 1.0, 0.5])
+    cache = ResponseCache(
+        config, DirectionalEmbeddings(), redis_client=FakeRedis(), rng=lambda: next(values)
+    )
+
+    # rng 0.0 -> factor 0.8; 1.0 -> 1.2; 0.5 -> 1.0
+    assert cache._jittered_ttl() == 800
+    assert cache._jittered_ttl() == 1200
+    assert cache._jittered_ttl() == 1000
+
+
+async def test_generation_bump_invalidates_all_entries_but_not_embedding_cache(settings):
+    from app.response_cache import GENERATION_KEY, bump_corpus_generation
+
+    config = settings()
+    redis = FakeRedis()
+    cache = make_cache(config, redis)
+    await cache.store(query="vacation days?", filters=None, payload=PAYLOAD)
+    assert (await cache.lookup(query="vacation days?", filters=None)) is not None
+
+    # Re-index completed -> one INCR retires the whole response cache.
+    await bump_corpus_generation(config, redis)
+    assert redis.counters[GENERATION_KEY] == 1
+    assert (await cache.lookup(query="vacation days?", filters=None)) is None
+
+    # A fresh answer under the new generation caches and serves again.
+    await cache.store(query="vacation days?", filters=None, payload=PAYLOAD)
+    assert (await cache.lookup(query="vacation days?", filters=None)) is not None
+
+
+async def test_worker_bumps_generation_only_when_the_corpus_changed(settings):
+    import tests.test_worker as wt
+    from app.response_cache import GENERATION_KEY
+    from app.worker import process_ingestion_job
+
+    config = settings()
+    repository = wt.FakeRepository()
+    jobs = wt.FakeJobsRepository(docs=repository)
+    embeddings = wt.FakeEmbeddingsClient()
+
+    document = wt.seed_document(
+        repository, text="\n\n".join(wt.TWO_PAGE_TEXTS), pages=None
+    )
+    job = await jobs.create_job(
+        kind="ingest", triggered_by="u", document_ids=[document["id"]]
+    )
+    ctx = wt.make_ctx(config, repository, jobs, embeddings)
+    counter = ctx["respcache_redis"]
+
+    result = await process_ingestion_job(ctx, job["id"])
+
+    assert result["status"] == "completed"
+    # CP-2: a completed index bumps the corpus generation exactly once.
+    assert counter.incremented == [GENERATION_KEY]
+
+    # An all-failed job changes nothing -> no bump.
+    repository.fail_index = True
+    document2 = wt.seed_document(repository, text="more text here", pages=None)
+    job2 = await jobs.create_job(
+        kind="ingest", triggered_by="u", document_ids=[document2["id"]]
+    )
+    ctx2 = wt.make_ctx(config, repository, jobs, embeddings)
+    await process_ingestion_job(ctx2, job2["id"])
+    assert ctx2["respcache_redis"].incremented == []

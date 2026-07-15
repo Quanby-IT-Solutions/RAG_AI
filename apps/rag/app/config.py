@@ -116,6 +116,8 @@ class Settings(BaseSettings):
     cache_semantic_threshold: float = Field(
         alias="CACHE_SEMANTIC_THRESHOLD", default=0.95, ge=0, le=1
     )
+    # CP-2: TTL jitter fraction (0.2 -> uniform in [0.8x, 1.2x] of the TTL).
+    cache_ttl_jitter: float = Field(alias="CACHE_TTL_JITTER", default=0.2, ge=0, le=0.9)
 
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)

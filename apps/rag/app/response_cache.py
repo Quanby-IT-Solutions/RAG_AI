@@ -1,4 +1,4 @@
-"""Redis response/semantic cache (CP-1, Flow B cache stage).
+"""Redis response/semantic cache (CP-1 + CP-2, Flow B cache stage).
 
 Checked AFTER the SC-1 security screen (position contractual — keys are
 computed from the MASKED query, raw PII never enters Redis) and BEFORE
@@ -14,11 +14,20 @@ Two layers under one interface:
 
 Hit/miss/semantic-hit counters are first-class Redis counters (OB-2/RP-4
 consume them). "I don't know" and degraded answers are NEVER cached.
+
+CP-2 staleness rules:
+- TTLs carry random jitter (CACHE_TTL_JITTER) so expiry never synchronizes
+  (no thundering-herd refill).
+- Every key embeds the CORPUS GENERATION (a Redis counter). Ingestion /
+  re-index completion bumps it — one INCR invalidates the whole response
+  cache, provably correct against the updated corpus. The IN-6 embedding
+  cache is content-addressed and deliberately untouched.
 """
 
 import hashlib
 import json
 import logging
+import random
 from typing import Any, Protocol
 
 from app.config import Settings
@@ -28,6 +37,10 @@ from app.timeouts import with_hard_timeout
 logger = logging.getLogger(__name__)
 
 _METRIC_KEYS = ("hits", "semanticHits", "misses", "stores")
+
+# CP-2: corpus-generation counter — bumped on every completed ingestion /
+# re-index job; embedded in every cache key.
+GENERATION_KEY = "respcache:generation"
 
 
 class SupportsEmbedTexts(Protocol):
@@ -67,11 +80,14 @@ class ResponseCache:
         settings: Settings,
         embeddings: SupportsEmbedTexts,
         redis_client: Any = None,
+        rng: Any = None,
     ) -> None:
         self._settings = settings
         self._embeddings = embeddings
         self._redis = redis_client
         self._fingerprint = config_fingerprint(settings)
+        # Injectable randomness (tests); jitter de-synchronizes expiry.
+        self._rng = rng if rng is not None else random.random
 
     async def _client(self) -> Any:
         if self._redis is None:
@@ -80,11 +96,27 @@ class ResponseCache:
             self._redis = aioredis.from_url(self._settings.redis_url, decode_responses=True)
         return self._redis
 
-    def _entry_key(self, digest: str) -> str:
-        return f"respcache:v1:{self._fingerprint}:{digest}"
+    async def _generation(self) -> str:
+        client = await self._client()
+        value = await with_hard_timeout(
+            client.get(GENERATION_KEY),
+            seconds=self._settings.redis_timeout_seconds,
+            operation="respcache.generation",
+        )
+        return str(value or 0)
 
-    def _semantic_key(self, filters_digest: str) -> str:
-        return f"respcache:sem:{self._fingerprint}:{filters_digest}"
+    def _entry_key(self, generation: str, digest: str) -> str:
+        return f"respcache:v1:{self._fingerprint}:g{generation}:{digest}"
+
+    def _semantic_key(self, generation: str, filters_digest: str) -> str:
+        return f"respcache:sem:{self._fingerprint}:g{generation}:{filters_digest}"
+
+    def _jittered_ttl(self) -> int:
+        """CP-2: base TTL ± CACHE_TTL_JITTER (uniform), so entries written
+        together never expire together."""
+        jitter = self._settings.cache_ttl_jitter
+        factor = 1.0 + (self._rng() * 2.0 - 1.0) * jitter
+        return max(1, int(self._settings.cache_ttl_seconds * factor))
 
     @staticmethod
     def _digests(query: str, filters: dict[str, Any] | None) -> tuple[str, str]:
@@ -111,9 +143,10 @@ class ResponseCache:
         cacheLayer marker, or None (counted as a miss)."""
         try:
             client = await self._client()
+            generation = await self._generation()
             exact_digest, filters_digest = self._digests(query, filters)
             raw = await with_hard_timeout(
-                client.get(self._entry_key(exact_digest)),
+                client.get(self._entry_key(generation, exact_digest)),
                 seconds=self._settings.redis_timeout_seconds,
                 operation="respcache.get",
             )
@@ -126,7 +159,7 @@ class ResponseCache:
             # Semantic layer: embed the (masked) query, compare with the
             # recent entries indexed under the same filter set.
             entries = await with_hard_timeout(
-                client.hgetall(self._semantic_key(filters_digest)),
+                client.hgetall(self._semantic_key(generation, filters_digest)),
                 seconds=self._settings.redis_timeout_seconds,
                 operation="respcache.sem_index",
             )
@@ -144,7 +177,7 @@ class ResponseCache:
                         best_digest = digest
                 if best_digest:
                     raw = await with_hard_timeout(
-                        client.get(self._entry_key(best_digest)),
+                        client.get(self._entry_key(generation, best_digest)),
                         seconds=self._settings.redis_timeout_seconds,
                         operation="respcache.get_semantic",
                     )
@@ -174,20 +207,21 @@ class ResponseCache:
             return
         try:
             client = await self._client()
+            generation = await self._generation()
             exact_digest, filters_digest = self._digests(query, filters)
             entry = {
                 key: payload[key]
                 for key in ("answer", "citations", "model", "isIDontKnow", "degraded")
                 if key in payload
             }
-            ttl = self._settings.cache_ttl_seconds
+            ttl = self._jittered_ttl()
             await with_hard_timeout(
-                client.set(self._entry_key(exact_digest), json.dumps(entry), ex=ttl),
+                client.set(self._entry_key(generation, exact_digest), json.dumps(entry), ex=ttl),
                 seconds=self._settings.redis_timeout_seconds,
                 operation="respcache.set",
             )
             vectors, _ = await self._embeddings.embed_texts([normalize_query(query)])
-            semantic_key = self._semantic_key(filters_digest)
+            semantic_key = self._semantic_key(generation, filters_digest)
             await with_hard_timeout(
                 client.hset(semantic_key, exact_digest, json.dumps({"embedding": vectors[0]})),
                 seconds=self._settings.redis_timeout_seconds,
@@ -210,6 +244,23 @@ class ResponseCache:
             operation="respcache.metrics",
         )
         return {key: int(value or 0) for key, value in zip(_METRIC_KEYS, values, strict=True)}
+
+
+async def bump_corpus_generation(settings: Settings, redis_client: Any = None) -> int:
+    """CP-2 invalidation hook: one INCR retires every response-cache key of
+    the previous corpus generation (old entries expire via their TTLs). The
+    IN-6 embedding cache is content-addressed and untouched."""
+    if redis_client is None:
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    value = await with_hard_timeout(
+        redis_client.incr(GENERATION_KEY),
+        seconds=settings.redis_timeout_seconds,
+        operation="respcache.generation_bump",
+    )
+    logger.info("respcache.generation_bumped %s", {"generation": int(value)})
+    return int(value)
 
 
 def build_response_cache(

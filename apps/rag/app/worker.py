@@ -97,6 +97,17 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             )
 
     processed = [e for e in job_documents if e["status"] != "indexed"]
+    # CP-2: a completed ingestion/re-index changed the corpus — retire every
+    # cached answer from the previous generation (embedding cache untouched).
+    indexed_any = bool(processed) and len(stats["failures"]) < len(processed)
+    if indexed_any:
+        try:
+            from app.response_cache import bump_corpus_generation
+
+            await bump_corpus_generation(settings, ctx.get("respcache_redis"))
+        except Exception:
+            logger.warning("respcache.generation_bump_failed", exc_info=True)
+
     all_failed = bool(processed) and len(stats["failures"]) == len(processed)
     status = "failed" if all_failed else "completed"
     error = stats["failures"][0]["error"] if all_failed else None

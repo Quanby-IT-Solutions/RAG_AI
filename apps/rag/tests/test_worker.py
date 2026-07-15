@@ -17,6 +17,17 @@ from tests.conftest import REQUIRED_ENV
 from tests.test_ingest import FakeEmbeddingsClient, FakeJobsRepository, FakeRepository
 
 
+class FakeCounterRedis:
+    """CP-2 stub: records generation bumps without touching Redis."""
+
+    def __init__(self):
+        self.incremented: list[str] = []
+
+    async def incr(self, key):
+        self.incremented.append(key)
+        return len(self.incremented)
+
+
 class NullEmbeddingCache:
     """IN-6 stub: nothing cached, stores are dropped (unit tests hit no DB)."""
 
@@ -63,6 +74,8 @@ def make_ctx(settings, repository, jobs, embeddings) -> dict[str, Any]:
         "embeddings": embeddings,
         # IN-6: pass-through cache stub (no DB) — every item is a miss.
         "embedding_cache": NullEmbeddingCache(),
+        # CP-2: generation bumps land here instead of a real Redis.
+        "respcache_redis": FakeCounterRedis(),
     }
 
 
