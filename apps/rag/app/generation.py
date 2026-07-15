@@ -44,6 +44,7 @@ from app.response_cache import ResponseCache, build_response_cache
 from app.retrieval import RetrievalFilters, RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
 from app.security_screen import QueryBlockedError, screen_query
+from app.single_flight import SingleFlight, SingleFlightError
 from app.tracing import traced
 
 # Backward-compat alias: the GN-1 ChatClient moved to app.providers (GN-4).
@@ -90,6 +91,16 @@ _SYSTEM_PROMPT = (
 )
 
 _CITATION_MARKER = re.compile(r"\[(\d+)\]")
+
+
+def _sharable_entry(payload: dict[str, Any]) -> dict[str, Any]:
+    """CP-3: the cross-request-sharable slice of an answer payload (no
+    conversation/message ids — each follower persists its own turn)."""
+    return {
+        key: payload[key]
+        for key in ("answer", "citations", "model", "isIDontKnow", "degraded")
+        if key in payload
+    }
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -244,8 +255,9 @@ class GenerationService:
             "traceId": trace_id,
             "model": cached.get("model", "cache"),
             "tokenUsage": None,
-            "isIDontKnow": False,
-            "degraded": False,
+            # CP-1 entries are never idk/degraded; CP-3 shared results can be.
+            "isIDontKnow": bool(cached.get("isIDontKnow", False)),
+            "degraded": bool(cached.get("degraded", False)),
             "cached": True,
             "latencyMs": round((time.perf_counter() - started) * 1000, 3),
         }
@@ -408,6 +420,78 @@ class GenerationService:
                     started=started,
                 )
 
+        # ── CP-3 single-flight stage (Flow C): concurrent identical misses
+        # compute exactly once across replicas; followers reuse the leader's
+        # result (their own turn is still persisted + audited). Any
+        # coalescing failure degrades to an uncoalesced computation.
+        flight = await self._single_flight()
+        if flight is not None:
+            holder: dict[str, Any] = {}
+
+            async def compute() -> dict[str, Any]:
+                payload = await self._generate(
+                    query=query,
+                    k=k,
+                    principal=principal,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    started=started,
+                    filters=filters,
+                )
+                holder["payload"] = payload
+                return _sharable_entry(payload)
+
+            try:
+                entry, role = await flight.run(
+                    self._response_cache.flight_key(query, filters), compute
+                )
+            except SingleFlightError:
+                logger.warning("single_flight.degraded_to_uncoalesced", exc_info=True)
+            else:
+                if "payload" in holder:
+                    return holder["payload"]  # this request was the leader
+                return await self._serve_cached(
+                    cached={**entry, "cacheLayer": "single-flight"},
+                    query=query,
+                    principal=principal,
+                    conversation_id=conversation_id,
+                    trace_id=trace_id,
+                    started=started,
+                )
+
+        return await self._generate(
+            query=query,
+            k=k,
+            principal=principal,
+            conversation_id=conversation_id,
+            trace_id=trace_id,
+            started=started,
+            filters=filters,
+        )
+
+    async def _single_flight(self) -> "SingleFlight | None":
+        """CP-3 seam: coalescing needs the shared cache's Redis + the toggle."""
+        if self._response_cache is None or not self._settings.single_flight_enabled:
+            return None
+        try:
+            return SingleFlight(self._settings, await self._response_cache.redis())
+        except Exception:
+            logger.warning("single_flight.unavailable", exc_info=True)
+            return None
+
+    async def _generate(
+        self,
+        *,
+        query: str,
+        k: int | None,
+        principal: ServicePrincipal,
+        conversation_id: str | None,
+        trace_id: str,
+        started: float,
+        filters: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """The uncoalesced miss path: retrieve → budget → route → generate →
+        validate → persist → audit → (CP-1 store)."""
         prep = await self._prepare(query=query, k=k, filters=filters)
         chunks = prep["chunks"]
         retrieved_record = prep["retrieved_record"]
@@ -562,6 +646,35 @@ class GenerationService:
                 )
                 return
 
+        # ── CP-3 single-flight (Flow C, v1 streaming rule): a follower whose
+        # key is already being computed waits for the COMPLETED answer and
+        # replays it as one token + final; the leader streams normally and
+        # publishes its result at the final flush.
+        flight = await self._single_flight()
+        flight_owner: str | None = None
+        flight_key = ""
+        if flight is not None:
+            flight_key = self._response_cache.flight_key(query, filters)
+            flight_owner = uuid.uuid4().hex
+            if not await flight.try_acquire(flight_key, flight_owner):
+                flight_owner = None
+                try:
+                    outcome = await flight.await_result(flight_key)
+                except SingleFlightError:
+                    outcome = None  # wait failed -> stream uncoalesced
+                if outcome is not None and "result" in outcome:
+                    payload = await self._serve_cached(
+                        cached={**outcome["result"], "cacheLayer": "single-flight"},
+                        query=query,
+                        principal=principal,
+                        conversation_id=conversation_id,
+                        trace_id=trace_id,
+                        started=started,
+                    )
+                    yield _sse("token", {"delta": payload["answer"]})
+                    yield _sse("final", {**payload, "ttftMs": payload["latencyMs"]})
+                    return
+
         prep = await self._prepare(query=query, k=k, filters=filters)
         used_chunks = prep["used_chunks"]
 
@@ -644,6 +757,27 @@ class GenerationService:
 
         is_i_dont_know = _is_i_dont_know(answer_text)
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
+
+        # CP-3 leader: publish the completed answer for any waiters, then
+        # release the lock (best-effort — waiters also survive via lock TTL).
+        if flight is not None and flight_owner is not None:
+            try:
+                await flight.publish(
+                    flight_key,
+                    {
+                        "result": {
+                            "answer": answer_text,
+                            "citations": citations,
+                            "model": client.model,
+                            "isIDontKnow": is_i_dont_know,
+                            "degraded": degraded,
+                        }
+                    },
+                )
+            except Exception:
+                logger.warning("single_flight.stream_publish_failed", exc_info=True)
+            await flight.release(flight_key, flight_owner)
+            flight_owner = None
 
         await self._repository.write_audit(
             actor_id=principal.sub,

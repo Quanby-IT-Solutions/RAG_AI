@@ -96,6 +96,16 @@ class ResponseCache:
             self._redis = aioredis.from_url(self._settings.redis_url, decode_responses=True)
         return self._redis
 
+    async def redis(self) -> Any:
+        """Shared redis client (CP-3 single-flight reuses it)."""
+        return await self._client()
+
+    def flight_key(self, query: str, filters: dict[str, Any] | None) -> str:
+        """CP-3 coalescing key: same identity as the exact cache key
+        (fingerprint + normalized query + filters), generation-agnostic."""
+        exact_digest, _ = self._digests(query, filters)
+        return f"{self._fingerprint}:{exact_digest}"
+
     async def _generation(self) -> str:
         client = await self._client()
         value = await with_hard_timeout(

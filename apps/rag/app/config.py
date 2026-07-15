@@ -119,6 +119,19 @@ class Settings(BaseSettings):
     # CP-2: TTL jitter fraction (0.2 -> uniform in [0.8x, 1.2x] of the TTL).
     cache_ttl_jitter: float = Field(alias="CACHE_TTL_JITTER", default=0.2, ge=0, le=0.9)
 
+    # --- Single-flight coalescing (CP-3, Flow C) — Redis lock + result key
+    # so concurrent identical misses compute exactly once across replicas.
+    single_flight_enabled: bool = Field(alias="SINGLE_FLIGHT_ENABLED", default=True)
+    single_flight_lock_ttl_seconds: int = Field(
+        alias="SINGLE_FLIGHT_LOCK_TTL_SECONDS", default=90, ge=1
+    )
+    single_flight_wait_timeout_seconds: float = Field(
+        alias="SINGLE_FLIGHT_WAIT_TIMEOUT_SECONDS", default=60.0, gt=0
+    )
+    single_flight_poll_interval_seconds: float = Field(
+        alias="SINGLE_FLIGHT_POLL_INTERVAL_SECONDS", default=0.15, gt=0
+    )
+
     # --- Reliability (GN-5) — retry/backoff + shared circuit breaker ---
     retry_max_attempts: int = Field(alias="RETRY_MAX_ATTEMPTS", default=3, ge=1)
     retry_base_delay_seconds: float = Field(alias="RETRY_BASE_DELAY_SECONDS", default=0.5, gt=0)
