@@ -87,4 +87,44 @@ export class CorpusController {
 			return this.corpusService.listDocuments()
 		})
 	}
+
+	// ── Jobs console (IN-7) — monitored by holders of corpus.ingest.run ──────
+
+	@RequirePermissions("corpus.ingest.run")
+	@Implement(v1.corpus.jobs.list)
+	async listJobs() {
+		return implement(v1.corpus.jobs.list).handler(async () => {
+			return this.corpusService.listJobs()
+		})
+	}
+
+	@RequirePermissions("corpus.ingest.run")
+	@Implement(v1.corpus.jobs.get)
+	async getJob() {
+		return implement(v1.corpus.jobs.get).handler(async ({ input }) => {
+			return this.corpusService.getJob(input.id)
+		})
+	}
+
+	@StrictThrottle()
+	@RequirePermissions("corpus.ingest.run")
+	@Implement(v1.corpus.jobs.rerun)
+	async rerunJob(
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number }
+	) {
+		return implement(v1.corpus.jobs.rerun).handler(async ({ input }) => {
+			const access = await this.rbacService.getUserAccess(session.user.id)
+			const correlationId = String(request.id ?? crypto.randomUUID())
+
+			await this.ragGatewayService.rerunJob({
+				jobId: input.id,
+				userId: session.user.id,
+				permissions: access.permissions,
+				requestId: correlationId,
+				traceId: correlationId,
+			})
+			return { id: input.id, status: "queued" as const }
+		})
+	}
 }

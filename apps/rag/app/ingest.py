@@ -1,4 +1,4 @@
-"""POST /internal/ingest — upload, normalize & index one document (Flow A, IN-1+IN-2+IN-3).
+"""POST /internal/ingest — upload, normalize & queue one document (Flow A, IN-1..IN-4, IN-7).
 
 Verifies the gateway service JWT, defensively re-checks type/size (the
 gateway's Multer limits are the first line), computes the sha256 content
@@ -7,27 +7,27 @@ app.loaders, IN-3), and idempotently upserts the `documents` row (upsert on
 content_hash — alternate A1). Corrupt/unreadable files are recorded as
 status=failed with the parse error (alternate A2).
 
-R1 fuses upload + index into one synchronous action (async jobs are IN-7):
-a successful normalize proceeds straight to chunk (recursive splitter) ->
-batch-embed (pinned model @ 1536 dims) -> upsert `chunks` on chunk
-content_hash -> documents.status = indexed. A chunk/embed/index failure marks
-the document `failed` with the reason — never stuck in `processing`. The whole
-request runs inside one trace (F1 tracing) and writes ONE RAG-action audit
-entry (upload + ingest, per the two-writer rule) into the append-only
-audit_log, recording chunk count / embed batch info.
+IN-7 decouples the heavy work from the request: a successful normalize
+creates an `ingestion_jobs` row (queued) with its `job_documents` entry,
+enqueues an arq task on Redis, and returns IMMEDIATELY with the job id —
+the worker process (app.worker) runs chunk -> batch-embed -> index (Flow A
+steps 5-7 via app.indexing) so corpus work never blocks /chat request
+workers. Re-running any job is safe: the pipeline is upsert-idempotent.
+
+POST /internal/jobs/{id}/rerun requeues a finished job (per-document rows
+reset to pending) and enqueues it again.
 """
 
 import asyncio
 import hashlib
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
-from app.chunking import chunk_document
-from app.config import Settings
 from app.documents import DocumentsRepository
 from app.embeddings import EmbeddingsClient
+from app.jobs import JobsRepository
 from app.loaders import LoaderSpec, resolve_loader, supported_mime_types
 from app.security import ServicePrincipal, verify_service_jwt
 from app.tracing import traced
@@ -35,13 +35,39 @@ from app.tracing import traced
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 AUDIT_ACTION_UPLOAD = "corpus.document.upload"
+AUDIT_ACTION_JOB_RERUN = "corpus.ingest.rerun"
+
+INGESTION_TASK_NAME = "process_ingestion_job"
 
 router = APIRouter(prefix="/internal", dependencies=[Depends(verify_service_jwt)])
+
+
+class JobQueue(Protocol):
+    async def enqueue_job(self, function: str, *args: Any) -> Any: ...
 
 
 def get_documents_repository(request: Request) -> DocumentsRepository:
     """Dependency seam so tests can override persistence."""
     return DocumentsRepository(request.app.state.settings)
+
+
+def get_jobs_repository(request: Request) -> JobsRepository:
+    """Dependency seam so tests can override job persistence."""
+    return JobsRepository(request.app.state.settings)
+
+
+async def get_job_queue(request: Request) -> JobQueue:
+    """Lazy shared arq pool on Redis (IN-7) — tests override this seam."""
+    queue = getattr(request.app.state, "job_queue", None)
+    if queue is None:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+
+        queue = await create_pool(
+            RedisSettings.from_dsn(request.app.state.settings.redis_url)
+        )
+        request.app.state.job_queue = queue
+    return queue
 
 
 def get_embeddings_client(request: Request) -> EmbeddingsClient:
@@ -55,7 +81,11 @@ def get_embeddings_client(request: Request) -> EmbeddingsClient:
 
 
 def _document_response(
-    document: dict[str, Any], *, reused: bool, chunk_count: int | None = None
+    document: dict[str, Any],
+    *,
+    reused: bool,
+    chunk_count: int | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     metadata = document.get("metadata") or {}
     return {
@@ -69,77 +99,8 @@ def _document_response(
         "pageCount": metadata.get("pageCount") if isinstance(metadata, dict) else None,
         "chunkCount": chunk_count,
         "reused": reused,
+        "jobId": job_id,
     }
-
-
-@traced(name="rag.index")
-async def _index_document(
-    *,
-    document: dict[str, Any],
-    text: str,
-    pages: list[dict[str, Any]] | None,
-    document_hash: str,
-    settings: Settings,
-    repository: DocumentsRepository,
-    embeddings: EmbeddingsClient,
-    audit: Any,
-    retried: bool,
-) -> dict[str, Any]:
-    """Flow A steps 5-7: chunk (IN-4 chain) -> batch-embed -> upsert chunks
-    -> indexed, with the chunking strategy/fallback recorded on the document.
-
-    Any chunk/embed/index error marks the document `failed` with the reason
-    (Flow A failure branch — never left stuck in `processing`)."""
-    try:
-        chunk_list, chunking_meta = await chunk_document(
-            text=text,
-            pages=pages,
-            document_hash=document_hash,
-            embeddings=embeddings,
-            strategy=settings.chunking_strategy,
-            min_chars=settings.chunk_min_chars,
-            max_chars=settings.chunk_max_chars,
-            breakpoint_percentile=settings.semantic_breakpoint_percentile,
-        )
-        vectors: list[list[float]] = []
-        batches = 0
-        if chunk_list:
-            vectors, batches = await embeddings.embed_texts([chunk.content for chunk in chunk_list])
-        rows = [
-            {
-                "content": chunk.content,
-                "embedding": vector,
-                "metadata": chunk.metadata,
-                "content_hash": chunk.content_hash,
-                "chunk_index": chunk.chunk_index,
-                "embedding_model": embeddings.model,
-            }
-            for chunk, vector in zip(chunk_list, vectors, strict=True)
-        ]
-        indexed = await repository.index_chunks(
-            document_id=document["id"],
-            chunks=rows,
-            metadata_patch={"chunking": chunking_meta},
-        )
-    except Exception as exc:
-        reason = f"Indexing failed: {exc}" if str(exc) else "Indexing failed"
-        failed = await repository.mark_document_failed(document["id"], reason)
-        failed = failed or {**document, "status": "failed", "error": reason}
-        await audit(failed, {"error": reason, "retried": retried})
-        return _document_response(failed, reused=False)
-
-    indexed = indexed or {**document, "status": "indexed", "error": None}
-    await audit(
-        indexed,
-        {
-            "chunkCount": len(chunk_list),
-            "embedBatches": batches,
-            "embeddingModel": embeddings.model,
-            "chunking": chunking_meta,
-            "retried": retried,
-        },
-    )
-    return _document_response(indexed, reused=False, chunk_count=len(chunk_list))
 
 
 @traced(name="rag.ingest")
@@ -148,10 +109,10 @@ async def _ingest_document(
     raw: bytes,
     filename: str,
     loader: LoaderSpec,
-    settings: Settings,
     principal: ServicePrincipal,
     repository: DocumentsRepository,
-    embeddings: EmbeddingsClient,
+    jobs: JobsRepository,
+    queue: JobQueue,
 ) -> dict[str, Any]:
     content_hash = hashlib.sha256(raw).hexdigest()
     source_uri = f"upload://{filename}"
@@ -217,29 +178,29 @@ async def _ingest_document(
         existing = await repository.fetch_by_content_hash(content_hash)
         return _document_response(existing or {}, reused=True)
 
-    # Flow A steps 5-7 (IN-2): chunk -> batch-embed -> index, synchronously in
-    # the same request (R1 fuses upload + index; async jobs are IN-7). The one
-    # audit entry for the fused upload+ingest action is written at the end.
-    return await _index_document(
-        document=document,
-        text=metadata["text"],
-        pages=metadata.get("pages"),
-        document_hash=content_hash,
-        settings=settings,
-        repository=repository,
-        embeddings=embeddings,
-        audit=_audit,
-        retried=existing is not None,
+    # IN-7: upload accepted -> ingestion_jobs row (queued) + arq enqueue.
+    # The API returns immediately with the job id; the worker process runs
+    # Flow A steps 5-7 (chunk -> batch-embed -> index) off the request path.
+    job = await jobs.create_job(
+        kind="ingest",
+        triggered_by=principal.sub,
+        document_ids=[document["id"]],
     )
+    await queue.enqueue_job(INGESTION_TASK_NAME, job["id"])
+    await _audit(
+        document,
+        {"jobId": job["id"], "queued": True, "retried": existing is not None},
+    )
+    return _document_response(document, reused=False, job_id=job["id"])
 
 
 @router.post("/ingest")
 async def ingest_document(
-    request: Request,
     file: UploadFile,
     principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
     repository: Annotated[DocumentsRepository, Depends(get_documents_repository)],
-    embeddings: Annotated[EmbeddingsClient, Depends(get_embeddings_client)],
+    jobs: Annotated[JobsRepository, Depends(get_jobs_repository)],
+    queue: Annotated[JobQueue, Depends(get_job_queue)],
 ) -> dict[str, Any]:
     # Defensive re-checks (gateway already enforces both via Multer + Nginx).
     loader = resolve_loader(file.content_type)
@@ -266,8 +227,38 @@ async def ingest_document(
         raw=raw,
         filename=file.filename or f"upload.{loader.doc_type}",
         loader=loader,
-        settings=request.app.state.settings,
         principal=principal,
         repository=repository,
-        embeddings=embeddings,
+        jobs=jobs,
+        queue=queue,
     )
+
+
+@router.post("/jobs/{job_id}/rerun")
+async def rerun_job(
+    job_id: str,
+    principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
+    repository: Annotated[DocumentsRepository, Depends(get_documents_repository)],
+    jobs: Annotated[JobsRepository, Depends(get_jobs_repository)],
+    queue: Annotated[JobQueue, Depends(get_job_queue)],
+) -> dict[str, Any]:
+    """Re-run a finished job (IN-7). Safe by construction: upserts make the
+    re-run idempotent and never duplicate rows (Flow A). Queued/running jobs
+    are not re-runnable (409)."""
+    requeued = await jobs.requeue(job_id)
+    if not requeued:
+        raise HTTPException(
+            status_code=409,
+            detail="Job not found or not in a re-runnable state (must be completed or failed)",
+        )
+    await queue.enqueue_job(INGESTION_TASK_NAME, job_id)
+    await repository.write_audit(
+        actor_id=principal.sub,
+        actor_type=principal.actor_type,
+        action=AUDIT_ACTION_JOB_RERUN,
+        resource_type="ingestion_job",
+        resource_id=job_id,
+        before=None,
+        after={"status": "queued"},
+    )
+    return {"id": job_id, "status": "queued"}

@@ -39,6 +39,7 @@ import {
 	useUploadDocumentMutation,
 	type CorpusDocumentUi,
 } from "@/features/corpus/api/corpus.hooks"
+import { JobsPanel } from "@/features/corpus/components/jobs-panel"
 
 // R1 document state machine badge styling (registered/processing/indexed/failed).
 const statusVariant: Record<CorpusDocumentUi["status"], "secondary" | "default" | "destructive"> = {
@@ -164,11 +165,13 @@ export function CorpusView() {
 								? "Already ingested — identical content, no duplicate created."
 								: upload.data.status === "failed"
 									? `Upload registered but parsing failed: ${upload.data.error ?? "unknown reason"}`
-									: "Uploaded — the document is processing."}
+									: "Uploaded — the document is processing in a background job."}
 						</p>
 					) : null}
 				</CardContent>
 			</Card>
+
+			<JobsPanel />
 
 			{isPending ? (
 				<div className="flex flex-col gap-2">

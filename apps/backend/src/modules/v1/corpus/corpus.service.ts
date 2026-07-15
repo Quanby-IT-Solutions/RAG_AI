@@ -1,8 +1,8 @@
-import { Injectable } from "@nestjs/common"
-import { desc } from "drizzle-orm"
+import { Injectable, NotFoundException } from "@nestjs/common"
+import { desc, eq, sql } from "drizzle-orm"
 
-import type { CorpusDocumentMetadata } from "@repo/contracts"
-import { documents } from "@repo/db/schema"
+import type { CorpusDocumentMetadata, IngestionJobStats } from "@repo/contracts"
+import { documents, ingestionJobs, jobDocuments } from "@repo/db/schema"
 
 import { db } from "@/common/database/database.client"
 
@@ -29,5 +29,65 @@ export class CorpusService {
 
 			return { ...row, metadata }
 		})
+	}
+
+	/**
+	 * Jobs console list (IN-7): newest first with per-job document counts.
+	 * Read-only over the ingestion-owned tables (the Python service + worker
+	 * own all writes).
+	 */
+	async listJobs() {
+		const rows = await db
+			.select({
+				id: ingestionJobs.id,
+				kind: ingestionJobs.kind,
+				status: ingestionJobs.status,
+				triggeredBy: ingestionJobs.triggeredBy,
+				stats: ingestionJobs.stats,
+				error: ingestionJobs.error,
+				createdAt: ingestionJobs.createdAt,
+				startedAt: ingestionJobs.startedAt,
+				finishedAt: ingestionJobs.finishedAt,
+				documentCount: sql<number>`count(${jobDocuments.id})::int`,
+				failedDocumentCount: sql<number>`count(${jobDocuments.id}) filter (where ${jobDocuments.status} = 'failed')::int`,
+			})
+			.from(ingestionJobs)
+			.leftJoin(jobDocuments, eq(jobDocuments.jobId, ingestionJobs.id))
+			.groupBy(ingestionJobs.id)
+			.orderBy(desc(ingestionJobs.createdAt))
+			.limit(50)
+
+		return rows.map(row => ({ ...row, stats: (row.stats as IngestionJobStats | null) ?? null }))
+	}
+
+	/** Job detail (IN-7): lifecycle row + per-document outcomes. */
+	async getJob(id: string) {
+		const [job] = await db.select().from(ingestionJobs).where(eq(ingestionJobs.id, id))
+		if (!job) {
+			throw new NotFoundException(`Ingestion job ${id} not found`)
+		}
+
+		const documentRows = await db
+			.select({
+				documentId: jobDocuments.documentId,
+				sourceUri: documents.sourceUri,
+				docType: documents.docType,
+				status: jobDocuments.status,
+				chunkCount: jobDocuments.chunkCount,
+				error: jobDocuments.error,
+				updatedAt: jobDocuments.updatedAt,
+			})
+			.from(jobDocuments)
+			.innerJoin(documents, eq(documents.id, jobDocuments.documentId))
+			.where(eq(jobDocuments.jobId, id))
+			.orderBy(jobDocuments.updatedAt)
+
+		return {
+			...job,
+			stats: (job.stats as IngestionJobStats | null) ?? null,
+			documentCount: documentRows.length,
+			failedDocumentCount: documentRows.filter(row => row.status === "failed").length,
+			documents: documentRows,
+		}
 	}
 }

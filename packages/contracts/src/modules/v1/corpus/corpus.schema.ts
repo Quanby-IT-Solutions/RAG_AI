@@ -37,6 +37,67 @@ export const DocumentSchema = z.object({
 		.transform(val => (typeof val === "string" ? new Date(val) : val)),
 })
 
+/** IN-7 job lifecycle: queued -> running -> completed | failed. */
+export const IngestionJobStatusSchema = z.enum(["queued", "running", "completed", "failed"])
+
+/** Per-job counters the console shows (cacheHits populated once IN-6 lands). */
+export const IngestionJobStatsSchema = z
+	.object({
+		documents: z.number().int().nonnegative().optional(),
+		chunks: z.number().int().nonnegative().optional(),
+		embedBatches: z.number().int().nonnegative().optional(),
+		cacheHits: z.number().int().nonnegative().optional(),
+		failures: z
+			.array(
+				z.object({ documentId: z.string(), error: z.string().nullable() }).catchall(z.unknown())
+			)
+			.optional(),
+	})
+	.catchall(z.unknown())
+
+export const IngestionJobSchema = z.object({
+	id: z.string().uuid(),
+	kind: z.enum(["ingest", "reindex"]),
+	status: IngestionJobStatusSchema,
+	triggeredBy: z.string().nullable(),
+	stats: IngestionJobStatsSchema.nullable(),
+	error: z.string().nullable(),
+	documentCount: z.number().int().nonnegative(),
+	failedDocumentCount: z.number().int().nonnegative(),
+	createdAt: z
+		.union([z.date(), z.string()])
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+	startedAt: z
+		.union([z.date(), z.string()])
+		.nullable()
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+	finishedAt: z
+		.union([z.date(), z.string()])
+		.nullable()
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+})
+
+export const JobDocumentSchema = z.object({
+	documentId: z.string().uuid(),
+	sourceUri: z.string(),
+	docType: z.string(),
+	status: z.enum(["pending", "indexed", "failed"]),
+	chunkCount: z.number().int().nonnegative().nullable(),
+	error: z.string().nullable(),
+	updatedAt: z
+		.union([z.date(), z.string()])
+		.transform(val => (typeof val === "string" ? new Date(val) : val)),
+})
+
+export const IngestionJobDetailSchema = IngestionJobSchema.extend({
+	documents: z.array(JobDocumentSchema),
+})
+
 export type DocumentStatus = z.infer<typeof DocumentStatusSchema>
 export type CorpusDocument = z.infer<typeof DocumentSchema>
 export type CorpusDocumentMetadata = z.infer<typeof DocumentMetadataSchema>
+export type IngestionJobStatus = z.infer<typeof IngestionJobStatusSchema>
+export type IngestionJobStats = z.infer<typeof IngestionJobStatsSchema>
+export type IngestionJob = z.infer<typeof IngestionJobSchema>
+export type IngestionJobDetail = z.infer<typeof IngestionJobDetailSchema>
+export type JobDocument = z.infer<typeof JobDocumentSchema>

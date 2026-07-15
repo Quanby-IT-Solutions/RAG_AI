@@ -62,10 +62,47 @@ export type UploadDocumentResult = {
 	ingestedAt: string
 	pageCount: number | null
 	reused: boolean
+	/** IN-7: the queued ingestion job (null for dedup no-ops / parse failures). */
+	jobId: string | null
 }
+
+// IN-7 jobs console shapes (dates arrive as ISO strings over JSON).
+export type IngestionJobUi = {
+	id: string
+	kind: "ingest" | "reindex"
+	status: "queued" | "running" | "completed" | "failed"
+	triggeredBy: string | null
+	stats: {
+		documents?: number
+		chunks?: number
+		embedBatches?: number
+		cacheHits?: number
+		failures?: { documentId: string; error: string | null }[]
+	} | null
+	error: string | null
+	documentCount: number
+	failedDocumentCount: number
+	createdAt: string
+	startedAt: string | null
+	finishedAt: string | null
+}
+
+export type JobDocumentUi = {
+	documentId: string
+	sourceUri: string
+	docType: string
+	status: "pending" | "indexed" | "failed"
+	chunkCount: number | null
+	error: string | null
+	updatedAt: string
+}
+
+export type IngestionJobDetailUi = IngestionJobUi & { documents: JobDocumentUi[] }
 
 export const corpusKeys = {
 	documents: ["corpus", "documents"] as const,
+	jobs: ["corpus", "jobs"] as const,
+	job: (id: string) => ["corpus", "jobs", id] as const,
 }
 
 export function isPermissionError(error: unknown): boolean {
@@ -117,6 +154,88 @@ export function useCorpusDocumentsQuery() {
 		queryFn: fetchDocuments,
 		// A 403 will never succeed on retry without new permissions.
 		retry: (failureCount, error) => !isPermissionError(error) && failureCount < 3,
+		// IN-7: ingestion is asynchronous — keep polling while anything is
+		// still processing so rows flip to indexed/failed without a reload.
+		refetchInterval: query => {
+			const rows = query.state.data
+			return rows?.some(row => row.status === "processing" || row.status === "registered")
+				? 3000
+				: false
+		},
+	})
+}
+
+async function fetchJobs(): Promise<IngestionJobUi[]> {
+	const response = await fetch(`${API_BASE}/corpus/jobs`, {
+		credentials: "include",
+		headers: { "Content-Type": "application/json" },
+	})
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	return (await response.json()) as IngestionJobUi[]
+}
+
+async function fetchJob(id: string): Promise<IngestionJobDetailUi> {
+	const response = await fetch(`${API_BASE}/corpus/jobs/${id}`, {
+		credentials: "include",
+		headers: { "Content-Type": "application/json" },
+	})
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	return (await response.json()) as IngestionJobDetailUi
+}
+
+async function rerunJob(id: string): Promise<{ id: string; status: "queued" }> {
+	const response = await fetch(`${API_BASE}/corpus/jobs/${id}/rerun`, {
+		method: "POST",
+		credentials: "include",
+		headers: { "Content-Type": "application/json" },
+	})
+	if (!response.ok) {
+		throw await parseError(response)
+	}
+	return (await response.json()) as { id: string; status: "queued" }
+}
+
+export function useIngestionJobsQuery() {
+	return useQuery({
+		queryKey: corpusKeys.jobs,
+		queryFn: fetchJobs,
+		retry: (failureCount, error) => !isPermissionError(error) && failureCount < 3,
+		// Live console: poll fast while a job is queued/running, slowly otherwise.
+		refetchInterval: query => {
+			const jobs = query.state.data
+			return jobs?.some(job => job.status === "queued" || job.status === "running")
+				? 2500
+				: 15000
+		},
+	})
+}
+
+export function useIngestionJobQuery(id: string | null) {
+	return useQuery({
+		queryKey: corpusKeys.job(id ?? "none"),
+		queryFn: () => fetchJob(id as string),
+		enabled: id !== null,
+		refetchInterval: query => {
+			const job = query.state.data
+			return job && (job.status === "queued" || job.status === "running") ? 2500 : false
+		},
+	})
+}
+
+export function useRerunJobMutation() {
+	const queryClient = useQueryClient()
+
+	return useMutation<{ id: string; status: "queued" }, Error, string>({
+		mutationKey: ["corpus", "jobs", "rerun"],
+		mutationFn: rerunJob,
+		onSettled: () => {
+			void queryClient.invalidateQueries({ queryKey: corpusKeys.jobs })
+			void queryClient.invalidateQueries({ queryKey: corpusKeys.documents })
+		},
 	})
 }
 

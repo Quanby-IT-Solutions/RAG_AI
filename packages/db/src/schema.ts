@@ -285,6 +285,70 @@ export const chunks = createTable("chunks", t => ({
 }))
 
 // ============================================================================
+// INGESTION JOBS (ingestion — IN-7)
+// ============================================================================
+
+/**
+ * One background ingestion/re-index run (DOMAIN-MODEL `ingestion_jobs`).
+ * OWNED by the ingestion epic; written by the Python RAG service + arq worker
+ * (no Python migrations — Drizzle owns DDL), read by the gateway for the jobs
+ * console and by reporting (RP-5, read-only).
+ *
+ * Lifecycle: queued -> running -> completed | failed. Re-running a failed job
+ * is always safe: the pipeline is upsert-idempotent end to end (Flow A).
+ * `stats` accumulates the counts the console shows (documents, chunks, embed
+ * batches, cache hits once IN-6 lands, failures).
+ */
+export const ingestionJobs = createTable("ingestion_jobs", t => ({
+	id: t.uuid("id").primaryKey().defaultRandom(),
+	kind: t
+		.text("kind")
+		.notNull()
+		.default("ingest")
+		.$type<"ingest" | "reindex">(),
+	status: t
+		.text("status")
+		.notNull()
+		.default("queued")
+		.$type<"queued" | "running" | "completed" | "failed">(),
+	// Actor who triggered the job (audit joins on audit_log; this is display).
+	triggeredBy: t.text("triggered_by"),
+	stats: t.jsonb("stats").$type<unknown>(),
+	error: t.text("error"),
+	createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	startedAt: t.timestamp("started_at", { withTimezone: true }),
+	finishedAt: t.timestamp("finished_at", { withTimezone: true }),
+}))
+
+/**
+ * Per-document outcome inside a job (DOMAIN-MODEL `job_documents`): the jobs
+ * console lists each document's status, chunk count, and failure reason.
+ */
+export const jobDocuments = createTable(
+	"job_documents",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		jobId: t
+			.uuid("job_id")
+			.notNull()
+			.references(() => ingestionJobs.id, { onDelete: "cascade" }),
+		documentId: t
+			.uuid("document_id")
+			.notNull()
+			.references(() => documents.id, { onDelete: "cascade" }),
+		status: t
+			.text("status")
+			.notNull()
+			.default("pending")
+			.$type<"pending" | "indexed" | "failed">(),
+		chunkCount: t.integer("chunk_count"),
+		error: t.text("error"),
+		updatedAt: t.timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("job_documents_job_id_idx").on(t.jobId)]
+)
+
+// ============================================================================
 // CONVERSATIONS + MESSAGES (generation — Flow B, GN-1)
 // ============================================================================
 
@@ -431,6 +495,8 @@ export const schema = Object.assign(
 		auditLog,
 		documents,
 		chunks,
+		ingestionJobs,
+		jobDocuments,
 		conversations,
 		messages,
 	},

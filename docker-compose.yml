@@ -215,6 +215,43 @@ services:
     restart: unless-stopped
 
   # ----------------------------------------------------------
+  # RAG Worker (arq) — background ingestion jobs (IN-7)
+  # ----------------------------------------------------------
+  # Separate PROCESS from the API replicas so heavy corpus work (chunk ->
+  # embed -> index) never blocks or degrades /chat request workers. Same
+  # image + env as `rag`; only the command differs.
+  rag-worker:
+    build:
+      context: .
+      dockerfile: apps/rag/Dockerfile
+    container_name: rag-ai-rag-worker
+    command: ["/app/.venv/bin/arq", "app.worker.WorkerSettings"]
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-ragai}
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
+      - TRACING_PROVIDER=${TRACING_PROVIDER:-langsmith}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-ragp}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - EMBEDDING_MODEL=text-embedding-3-large
+      - EMBEDDING_DIMENSIONS=1536
+    networks:
+      - app-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
   # Backend API (NestJS)
   # ----------------------------------------------------------
   backend:

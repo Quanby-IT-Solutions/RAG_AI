@@ -174,8 +174,9 @@ test.describe("corpus upload (IN-3 formats)", () => {
 		await expect(input).toBeVisible()
 		// The documents table only renders client-side after the list query
 		// resolves — its presence proves hydration (setInputFiles before
-		// hydration is silently dropped in Next dev mode).
-		await expect(page.getByRole("table")).toBeVisible({ timeout: 30_000 })
+		// hydration is silently dropped in Next dev mode). first(): the jobs
+		// console (IN-7) adds a second table to the page.
+		await expect(page.getByRole("table").first()).toBeVisible({ timeout: 30_000 })
 
 		// Unique content per run so the upsert path (not dedup no-op) is exercised.
 		const csv = `name,note\ne2e ${testInfo.workerIndex},run ${Date.now()}\n`
@@ -187,7 +188,7 @@ test.describe("corpus upload (IN-3 formats)", () => {
 
 		// Ingestion is synchronous (R1): success copy appears when indexing completes.
 		await expect(
-			page.getByText(/Uploaded — the document is processing\.|Already ingested/)
+			page.getByText(/Uploaded — the document is processing in a background job\.|Already ingested/)
 		).toBeVisible({ timeout: 60_000 })
 
 		// The corpus list refreshes and shows the new csv document.
@@ -201,7 +202,7 @@ test.describe("corpus upload (IN-3 formats)", () => {
 		const input = page.getByLabel("Upload document")
 		await expect(input).toBeVisible()
 		// Hydration gate — see the upload test above.
-		await expect(page.getByRole("table")).toBeVisible({ timeout: 30_000 })
+		await expect(page.getByRole("table").first()).toBeVisible({ timeout: 30_000 })
 
 		await input.setInputFiles({
 			name: "notes.txt",
@@ -212,5 +213,55 @@ test.describe("corpus upload (IN-3 formats)", () => {
 		await expect(
 			page.getByText("Only PDF, HTML, DOCX, and CSV files are accepted.")
 		).toBeVisible()
+	})
+})
+
+test.describe("ingestion jobs console (IN-7)", () => {
+	test("lists background jobs with status and supports detail expansion", async ({ page }) => {
+		await page.goto("/corpus")
+		const panel = page.getByText("Ingestion jobs", { exact: true })
+		await expect(panel).toBeVisible()
+
+		// At least one job row exists from prior uploads (live stack).
+		const jobsTable = page.getByRole("table", { name: "Ingestion jobs" })
+		await expect(jobsTable).toBeVisible({ timeout: 30_000 })
+		const detailsButton = jobsTable.getByRole("button", { name: "Details" }).first()
+		await expect(detailsButton).toBeVisible()
+
+		await detailsButton.click()
+		// The expanded row's toggle relabels to "Hide" with aria-expanded=true.
+		const hideButton = jobsTable.getByRole("button", { name: "Hide" })
+		await expect(hideButton).toHaveAttribute("aria-expanded", "true")
+		// Per-document outcomes render inside the expanded row.
+		await expect(page.getByRole("table", { name: "Documents in this job" })).toBeVisible({
+			timeout: 15_000,
+		})
+	})
+
+	test("upload flows through the async job to indexed in the documents list", async ({
+		page,
+	}, testInfo) => {
+		await page.goto("/corpus")
+		const input = page.getByLabel("Upload document")
+		await expect(input).toBeVisible()
+		await expect(page.getByRole("table").first()).toBeVisible({ timeout: 30_000 })
+
+		const marker = `e2e-job ${testInfo.workerIndex} ${Date.now()}`
+		const csv = `name,note\n${marker},async ingestion validation\n`
+		await input.setInputFiles({
+			name: "e2e-job.csv",
+			mimeType: "text/csv",
+			buffer: Buffer.from(csv, "utf-8"),
+		})
+
+		await expect(
+			page.getByText("Uploaded — the document is processing in a background job.")
+		).toBeVisible({ timeout: 30_000 })
+
+		// The documents list polls while processing and flips to indexed once
+		// the worker finishes — no reload needed.
+		const row = page.getByRole("row").filter({ hasText: "e2e-job.csv" }).first()
+		await expect(row).toBeVisible({ timeout: 15_000 })
+		await expect(row.getByText("indexed")).toBeVisible({ timeout: 60_000 })
 	})
 })

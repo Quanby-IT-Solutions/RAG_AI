@@ -124,6 +124,35 @@ export class RagGatewayService {
 		})
 	}
 
+	/**
+	 * Re-run a finished ingestion job (IN-7): POST
+	 * {RAG_SERVICE_URL}/internal/jobs/{id}/rerun. The Python side requeues the
+	 * job (409 when it isn't re-runnable) and enqueues the arq task.
+	 */
+	async rerunJob(input: {
+		jobId: string
+		userId: string
+		permissions: readonly string[]
+		requestId: string
+		traceId: string
+	}): Promise<unknown> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: input.permissions,
+			requestId: input.requestId,
+			traceId: input.traceId,
+		})
+
+		return this.forward(`/internal/jobs/${input.jobId}/rerun`, {
+			headers: {
+				authorization: `Bearer ${token}`,
+				"x-request-id": input.requestId,
+			},
+			body: "",
+			failureMessage: "RAG job re-run failed",
+		})
+	}
+
 	/** Shared POST transport: hard timeout + uniform error mapping. */
 	private async forward(
 		path: string,

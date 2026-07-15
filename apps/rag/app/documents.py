@@ -34,6 +34,11 @@ SELECT id, source_uri, doc_type, content_hash, status, metadata, error, ingested
 FROM documents WHERE content_hash = $1
 """
 
+_SELECT_BY_ID_SQL = """
+SELECT id, source_uri, doc_type, content_hash, status, metadata, error, ingested_at
+FROM documents WHERE id = $1
+"""
+
 _AUDIT_INSERT_SQL = """
 INSERT INTO audit_log (actor_id, actor_type, action, resource_type, resource_id, before, after)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -127,6 +132,18 @@ class DocumentsRepository:
                 conn.fetchrow(_SELECT_BY_HASH_SQL, content_hash),
                 seconds=self._settings.db_timeout_seconds,
                 operation="documents.fetch_by_content_hash",
+            )
+        finally:
+            await conn.close()
+        return _row_to_dict(row) if row else None
+
+    async def fetch_by_id(self, document_id: str) -> dict[str, Any] | None:
+        conn = await self._connect()
+        try:
+            row = await with_hard_timeout(
+                conn.fetchrow(_SELECT_BY_ID_SQL, document_id),
+                seconds=self._settings.db_timeout_seconds,
+                operation="documents.fetch_by_id",
             )
         finally:
             await conn.close()

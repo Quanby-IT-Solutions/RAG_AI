@@ -54,11 +54,21 @@ export {
 	DocumentSchema,
 	DocumentStatusSchema,
 	DocumentMetadataSchema,
+	IngestionJobSchema,
+	IngestionJobDetailSchema,
+	IngestionJobStatsSchema,
+	IngestionJobStatusSchema,
+	JobDocumentSchema,
 } from "./modules/v1/corpus/corpus.schema.js"
 export type {
 	CorpusDocument,
 	DocumentStatus,
 	CorpusDocumentMetadata,
+	IngestionJob,
+	IngestionJobDetail,
+	IngestionJobStats,
+	IngestionJobStatus,
+	JobDocument,
 } from "./modules/v1/corpus/corpus.schema.js"
 
 // Chat (generation) contract + schemas

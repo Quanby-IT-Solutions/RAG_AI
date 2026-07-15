@@ -25,7 +25,12 @@ jest.mock("@orpc/server", () => ({
 }))
 
 jest.mock("@/config/api-versions.config", () => ({
-	v1: { corpus: { documents: { list: {} } } },
+	v1: {
+		corpus: {
+			documents: { list: {} },
+			jobs: { list: {}, get: {}, rerun: {} },
+		},
+	},
 }))
 
 jest.mock("@/config/env.config", () => ({
@@ -89,6 +94,17 @@ describe("CorpusController", () => {
 			)
 			expect(required).toEqual(["corpus.documents.read"])
 		})
+
+		it.each(["listJobs", "getJob", "rerunJob"] as const)(
+			"requires corpus.ingest.run on the %s jobs-console route (IN-7)",
+			method => {
+				const required = Reflect.getMetadata(
+					REQUIRED_PERMISSIONS_KEY,
+					CorpusController.prototype[method]
+				)
+				expect(required).toEqual(["corpus.ingest.run"])
+			}
+		)
 	})
 
 	describe("Multer gateway limits (rejected BEFORE forwarding)", () => {

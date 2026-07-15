@@ -1,9 +1,9 @@
-"""Ingest endpoint tests (IN-1 + IN-2): service-JWT auth, defensive re-checks,
-Flow A idempotency (A1), corrupt-PDF failure (A2), and the synchronous
-chunk -> batch-embed -> index pipeline (steps 5-7). DB is mocked with an
-in-memory repository mirroring the ON CONFLICT upsert semantics (documents on
-content_hash, chunks on chunk content_hash); OpenAI is a fake embeddings
-client — real providers are never called."""
+"""Ingest endpoint tests (IN-1 + IN-3 + IN-7): service-JWT auth, defensive
+re-checks, Flow A idempotency (A1), corrupt-file failure (A2), and the IN-7
+queue path — upload returns immediately with a queued job id; the pipeline
+itself is exercised in tests/test_worker.py. DB is mocked with an in-memory
+repository mirroring the ON CONFLICT upsert semantics; OpenAI is a fake
+embeddings client — real providers are never called."""
 
 import hashlib
 import io
@@ -17,7 +17,13 @@ import jwt
 import pytest
 
 from app.config import PINNED_EMBEDDING_DIMENSIONS, PINNED_EMBEDDING_MODEL
-from app.ingest import get_documents_repository, get_embeddings_client
+from app.ingest import (
+    INGESTION_TASK_NAME,
+    get_documents_repository,
+    get_embeddings_client,
+    get_job_queue,
+    get_jobs_repository,
+)
 from app.main import create_app
 from tests.conftest import REQUIRED_ENV
 
@@ -87,6 +93,10 @@ class FakeRepository:
 
     async def fetch_by_content_hash(self, content_hash: str) -> dict[str, Any] | None:
         row = self.rows.get(content_hash)
+        return dict(row) if row else None
+
+    async def fetch_by_id(self, document_id: str) -> dict[str, Any] | None:
+        row = self._row_by_id(document_id)
         return dict(row) if row else None
 
     async def upsert_document(
@@ -162,6 +172,103 @@ class FakeRepository:
         self.audits.append(entry)
 
 
+class FakeJobsRepository:
+    """In-memory ingestion_jobs/job_documents mirror (IN-7). `docs` links to
+    the FakeRepository so fetch_job_documents can join document columns the
+    way the SQL does."""
+
+    def __init__(self, docs: "FakeRepository | None" = None) -> None:
+        self.docs = docs
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.job_documents: dict[str, list[dict[str, Any]]] = {}
+
+    async def create_job(
+        self, *, kind: str, triggered_by: str, document_ids: list[str]
+    ) -> dict[str, Any]:
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "kind": kind,
+            "status": "queued",
+            "triggered_by": triggered_by,
+            "stats": None,
+            "error": None,
+            "created_at": datetime.now(UTC).isoformat(),
+            "started_at": None,
+            "finished_at": None,
+        }
+        self.jobs[job_id] = job
+        self.job_documents[job_id] = [
+            {"document_id": document_id, "status": "pending", "chunk_count": None, "error": None}
+            for document_id in document_ids
+        ]
+        return dict(job)
+
+    async def mark_running(self, job_id: str) -> None:
+        self.jobs[job_id]["status"] = "running"
+
+    async def finish(
+        self, job_id: str, *, status: str, stats: dict[str, Any], error: str | None
+    ) -> None:
+        self.jobs[job_id].update(
+            status=status,
+            stats=stats,
+            error=error,
+            finished_at=datetime.now(UTC).isoformat(),
+        )
+
+    async def requeue(self, job_id: str) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job["status"] not in ("completed", "failed"):
+            return False
+        job.update(status="queued", error=None, started_at=None, finished_at=None)
+        for entry in self.job_documents[job_id]:
+            entry.update(status="pending", error=None)
+        return True
+
+    async def set_document_outcome(
+        self,
+        *,
+        job_id: str,
+        document_id: str,
+        status: str,
+        chunk_count: int | None,
+        error: str | None,
+    ) -> None:
+        for entry in self.job_documents[job_id]:
+            if entry["document_id"] == document_id:
+                entry.update(status=status, chunk_count=chunk_count, error=error)
+
+    async def fetch_job(self, job_id: str) -> dict[str, Any] | None:
+        job = self.jobs.get(job_id)
+        return dict(job) if job else None
+
+    async def fetch_job_documents(self, job_id: str) -> list[dict[str, Any]]:
+        entries = []
+        for entry in self.job_documents.get(job_id, []):
+            row = None
+            if self.docs is not None:
+                row = self.docs._row_by_id(entry["document_id"])
+            entries.append(
+                {
+                    **entry,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "source_uri": row["source_uri"] if row else "upload://missing",
+                    "doc_type": row["doc_type"] if row else "pdf",
+                    "metadata": row["metadata"] if row else None,
+                }
+            )
+        return entries
+
+
+class FakeJobQueue:
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[str, ...]] = []
+
+    async def enqueue_job(self, function: str, *args: Any) -> None:
+        self.enqueued.append((function, *args))
+
+
 class FakeEmbeddingsClient:
     """Deterministic stand-in for the OpenAI batch client; records every
     provider call so tests can assert batching (one call for N chunks)."""
@@ -190,10 +297,22 @@ def embeddings() -> FakeEmbeddingsClient:
 
 
 @pytest.fixture
-def app(settings, repository, embeddings):
+def jobs(repository) -> FakeJobsRepository:
+    return FakeJobsRepository(docs=repository)
+
+
+@pytest.fixture
+def queue() -> FakeJobQueue:
+    return FakeJobQueue()
+
+
+@pytest.fixture
+def app(settings, repository, embeddings, jobs, queue):
     application = create_app(settings)
     application.dependency_overrides[get_documents_repository] = lambda: repository
     application.dependency_overrides[get_embeddings_client] = lambda: embeddings
+    application.dependency_overrides[get_jobs_repository] = lambda: jobs
+    application.dependency_overrides[get_job_queue] = lambda: queue
     return application
 
 
@@ -270,22 +389,26 @@ async def test_rejects_oversized_pdf(app, repository):
     assert repository.rows == {}
 
 
-# ------------------------------------------------------------ happy path (A)
-async def test_valid_pdf_is_indexed_synchronously(app, repository, embeddings):
-    """R1 fuses upload + index: a blank (no-text) PDF normalizes to zero
-    chunks and still flips straight to indexed — never left in processing."""
+# ------------------------------------------------- happy path (A, IN-7 queue)
+async def test_valid_pdf_upload_queues_job_and_returns_immediately(
+    app, repository, embeddings, jobs, queue
+):
+    """IN-7: upload normalizes + registers the document, creates a queued
+    ingestion job, enqueues the arq task, and returns the job id — no
+    chunk/embed/index work happens on the request path."""
     pdf = make_pdf_bytes()
     response = await post_ingest(app, token=make_token(), content=pdf)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "indexed"
+    assert body["status"] == "processing"
     assert body["docType"] == "pdf"
     assert body["sourceUri"] == "upload://handbook.pdf"
     assert body["contentHash"] == hashlib.sha256(pdf).hexdigest()
     assert body["reused"] is False
     assert body["error"] is None
-    assert body["chunkCount"] == 0
+    assert body["chunkCount"] is None
+    assert body["jobId"]
 
     assert len(repository.rows) == 1
     row = repository.rows[body["contentHash"]]
@@ -293,15 +416,21 @@ async def test_valid_pdf_is_indexed_synchronously(app, repository, embeddings):
     assert metadata["originalFilename"] == "handbook.pdf"
     assert metadata["pageCount"] == 1
     assert "text" in metadata
-    assert metadata["pages"][0]["page"] == 0
     assert metadata["ingestedAt"]
 
-    # No text -> no chunks -> zero provider calls.
+    # Job row queued with this document; the arq task was enqueued.
+    job = jobs.jobs[body["jobId"]]
+    assert job["status"] == "queued"
+    assert job["kind"] == "ingest"
+    assert job["triggered_by"] == "user-1"
+    assert jobs.job_documents[body["jobId"]][0]["document_id"] == row["id"]
+    assert queue.enqueued == [(INGESTION_TASK_NAME, body["jobId"])]
+
+    # NO provider or chunk work on the request path (worker's job).
     assert embeddings.calls == []
     assert repository.chunks == {}
 
-    # ONE RAG-action audit entry for the fused upload+ingest, attributed to
-    # the JWT principal, recording chunk count / embed batch info.
+    # Upload audit attributes the actor and records the queued job.
     assert len(repository.audits) == 1
     audit = repository.audits[0]
     assert audit["actor_id"] == "user-1"
@@ -309,9 +438,9 @@ async def test_valid_pdf_is_indexed_synchronously(app, repository, embeddings):
     assert audit["action"] == "corpus.document.upload"
     assert audit["resource_type"] == "document"
     assert audit["resource_id"] == row["id"]
-    assert audit["after"]["status"] == "indexed"
-    assert audit["after"]["chunkCount"] == 0
-    assert audit["after"]["embedBatches"] == 0
+    assert audit["after"]["status"] == "processing"
+    assert audit["after"]["jobId"] == body["jobId"]
+    assert audit["after"]["queued"] is True
 
 
 # ------------------------------------------------------- idempotency (A1)
@@ -326,13 +455,14 @@ async def test_indexed_document_reupload_is_noop(app, repository, embeddings):
     body = response.json()
     assert body["status"] == "indexed"  # status untouched
     assert body["reused"] is True
+    assert body["jobId"] is None  # no-op -> no job, nothing enqueued
     assert body["id"] == seeded["id"]
     assert len(repository.rows) == 1  # no duplicate row
     assert repository.upsert_calls == 0  # short-circuited before any write
     assert embeddings.calls == []  # no chunking/embedding work either
 
 
-async def test_failed_document_retries_through_to_indexed(app, repository):
+async def test_failed_document_retry_requeues_a_job(app, repository, jobs, queue):
     pdf = make_pdf_bytes()
     content_hash = hashlib.sha256(pdf).hexdigest()
     seeded = repository.seed(content_hash, "failed", error="PDF parse failed: boom")
@@ -341,11 +471,13 @@ async def test_failed_document_retries_through_to_indexed(app, repository):
 
     assert response.status_code == 200
     body = response.json()
-    # R1 retry: failed -> processing -> (synchronous pipeline) -> indexed.
-    assert body["status"] == "indexed"
+    # Retry: failed -> processing + a fresh queued job (worker re-indexes).
+    assert body["status"] == "processing"
     assert body["error"] is None
     assert body["id"] == seeded["id"]  # same row, no duplicate
+    assert body["jobId"] in jobs.jobs
     assert len(repository.rows) == 1
+    assert len(queue.enqueued) == 1
     assert repository.audits[0]["after"]["retried"] is True
 
 
@@ -372,122 +504,11 @@ async def test_corrupt_pdf_marked_failed_with_reason(app, repository):
     assert audit["after"]["error"] == body["error"]
 
 
-# ------------------------------------- chunk + embed + index pipeline (IN-2)
-async def test_chunks_written_with_pinned_model_and_document_indexed(
-    app, repository, embeddings, monkeypatch
-):
-    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
-    pdf = make_pdf_bytes()
-
-    response = await post_ingest(app, token=make_token(), content=pdf)
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "indexed"
-    assert body["chunkCount"] == len(repository.chunks) > 1
-
-    chunks = sorted(repository.chunks.values(), key=lambda c: c["chunk_index"])
-    document_id = repository.rows[body["contentHash"]]["id"]
-    for position, chunk in enumerate(chunks):
-        assert chunk["document_id"] == document_id
-        assert chunk["chunk_index"] == position
-        assert chunk["content"].strip()
-        assert len(chunk["embedding"]) == PINNED_EMBEDDING_DIMENSIONS
-        assert chunk["embedding_model"] == PINNED_EMBEDDING_MODEL
-        assert chunk["content_hash"]
-        assert chunk["metadata"]["page"] in (0, 1)
-
-    # Page metadata survived onto chunks: page 0 text chunks first, page 1 last.
-    assert chunks[0]["metadata"]["page"] == 0
-    assert chunks[-1]["metadata"]["page"] == 1
-
-    audit = repository.audits[0]
-    assert audit["after"]["status"] == "indexed"
-    assert audit["after"]["chunkCount"] == body["chunkCount"]
-    assert audit["after"]["embedBatches"] == 1
-    assert audit["after"]["embeddingModel"] == PINNED_EMBEDDING_MODEL
-
-
-async def test_embedding_calls_are_batched_one_call_for_n_chunks(
-    app, repository, embeddings, monkeypatch
-):
-    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
-
-    response = await post_ingest(app, token=make_token(), content=make_pdf_bytes())
-
-    chunk_count = response.json()["chunkCount"]
-    assert chunk_count > 1
-    # Batched provider calls only (IN-4 adds ONE sentence-embedding pass for
-    # boundary detection; chunk embedding stays ONE call for all N chunks) —
-    # never one call per chunk.
-    assert len(embeddings.calls) == 2
-    assert len(embeddings.calls[-1]) == chunk_count
-
-
-async def test_reindexing_same_document_keeps_chunk_count_stable(
-    app, repository, embeddings, monkeypatch
-):
-    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
-    pdf = make_pdf_bytes()
-
-    first = await post_ingest(app, token=make_token(), content=pdf)
-    first_count = first.json()["chunkCount"]
-    assert first_count > 1
-
-    # Force the pipeline to re-run (an indexed doc would no-op): simulate a
-    # failed document so the R1 retry path re-chunks, re-embeds, re-upserts.
-    content_hash = first.json()["contentHash"]
-    repository.rows[content_hash]["status"] = "failed"
-
-    second = await post_ingest(app, token=make_token(), content=pdf)
-
-    assert second.json()["status"] == "indexed"
-    assert second.json()["chunkCount"] == first_count
-    # Upsert on chunk content_hash: same rows, no duplicates.
-    assert len(repository.chunks) == first_count
-    assert repository.index_calls == 2  # the pipeline really ran twice
-
-
-async def test_embed_failure_marks_document_failed_not_stuck_processing(
-    app, repository, embeddings, monkeypatch
-):
-    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
-    embeddings.fail = True
-
-    response = await post_ingest(app, token=make_token(), content=make_pdf_bytes())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert "embedding provider down" in body["error"]
-
-    row = repository.rows[body["contentHash"]]
-    assert row["status"] == "failed"  # not left in processing
-    assert "embedding provider down" in row["error"]
-    assert repository.chunks == {}  # nothing indexed
-
-    audit = repository.audits[0]
-    assert audit["after"]["status"] == "failed"
-    assert "embedding provider down" in audit["after"]["error"]
-
-
-async def test_chunk_write_failure_marks_document_failed(app, repository, embeddings, monkeypatch):
-    monkeypatch.setattr("app.loaders.normalize_pdf", fake_two_page_normalize)
-    repository.fail_index = True
-
-    response = await post_ingest(app, token=make_token(), content=make_pdf_bytes())
-
-    body = response.json()
-    assert body["status"] == "failed"
-    assert "chunks write failed" in body["error"]
-    assert repository.rows[body["contentHash"]]["status"] == "failed"
-
-
 # -------------------------------------------------------- IN-3 loader formats
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-async def test_html_upload_indexes_end_to_end(app, repository, embeddings):
+async def test_html_upload_normalizes_and_queues(app, repository, embeddings, jobs):
     html = (
         b"<html><head><title>Handbook</title></head><body>"
         + b"<p>" + b"Vacation policy details. " * 80 + b"</p>"
@@ -499,20 +520,20 @@ async def test_html_upload_indexes_end_to_end(app, repository, embeddings):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "indexed"
+    assert body["status"] == "processing"
     assert body["docType"] == "html"
     assert body["sourceUri"] == "upload://handbook.html"
-    assert body["chunkCount"] > 0
+    assert body["jobId"] in jobs.jobs
 
     row = repository.rows[body["contentHash"]]
     assert row["metadata"]["title"] == "Handbook"
     assert "ignore()" not in row["metadata"]["text"]
-    # Same {text, source, metadata} shape as PDF -> same downstream pipeline.
-    # Batched calls only: one sentence pass (IN-4) + one chunk pass.
-    assert len(embeddings.calls) == 2
+    # Same {text, source, metadata} shape as PDF -> same worker pipeline;
+    # nothing embeds on the request path.
+    assert embeddings.calls == []
 
 
-async def test_docx_upload_indexes_end_to_end(app, repository, embeddings):
+async def test_docx_upload_normalizes_and_queues(app, repository, embeddings):
     from tests.test_loaders import make_docx_bytes
 
     docx = make_docx_bytes("Remote work policy. " * 100)
@@ -522,13 +543,12 @@ async def test_docx_upload_indexes_end_to_end(app, repository, embeddings):
 
     body = response.json()
     assert response.status_code == 200
-    assert body["status"] == "indexed"
+    assert body["status"] == "processing"
     assert body["docType"] == "docx"
-    assert body["chunkCount"] > 0
-    assert len(embeddings.calls) == 2  # sentence pass + chunk pass, both batched
+    assert body["jobId"]
 
 
-async def test_csv_upload_preserves_sections_into_chunks(app, repository, embeddings):
+async def test_csv_upload_normalizes_structure_and_queues(app, repository, embeddings):
     rows = "\n".join(f"item {i},{'description ' * 30}{i}" for i in range(1, 120))
     csv_bytes = f"item,description\n{rows}\n".encode()
     response = await post_ingest(
@@ -537,18 +557,16 @@ async def test_csv_upload_preserves_sections_into_chunks(app, repository, embedd
 
     body = response.json()
     assert response.status_code == 200
-    assert body["status"] == "indexed"
+    assert body["status"] == "processing"
     assert body["docType"] == "csv"
+    assert body["jobId"]
 
     row = repository.rows[body["contentHash"]]
     assert row["metadata"]["columns"] == ["item", "description"]
     assert row["metadata"]["rowCount"] == 119
-    # Row/column structure preserved in text form.
+    # Row/column structure preserved in text form (chunk-level section
+    # metadata is asserted in tests/test_worker.py where indexing runs).
     assert "item: item 1 |" in row["metadata"]["text"]
-    # Section metadata per row-group flows through to indexed chunks.
-    sections = {chunk["metadata"].get("section") for chunk in repository.chunks.values()}
-    assert "rows 1-50" in sections
-    assert "rows 51-100" in sections
 
 
 async def test_corrupt_docx_marked_failed_with_reason(app, repository):
@@ -575,17 +593,57 @@ async def test_unsupported_type_rejected_with_supported_list(app, repository):
     assert repository.rows == {}  # rejected at the API, no partial rows
 
 
-async def test_identical_content_dedups_across_formats(app, repository):
-    """Flow A dedup is format-agnostic: the same bytes re-uploaded under any
-    supported type no-op on content_hash."""
+async def test_identical_content_dedups_across_formats(app, repository, jobs, queue):
+    """Flow A dedup is format-agnostic: bytes whose hash is already indexed
+    no-op on content_hash regardless of the upload's declared format."""
     csv_bytes = b"name,role\nAda,Engineer\n"
-    first = await post_ingest(
-        app, token=make_token(), content=csv_bytes, content_type="text/csv", filename="a.csv"
-    )
-    assert first.json()["reused"] is False
+    repository.seed(hashlib.sha256(csv_bytes).hexdigest(), "indexed")
 
-    second = await post_ingest(
+    response = await post_ingest(
         app, token=make_token(), content=csv_bytes, content_type="text/csv", filename="copy.csv"
     )
-    assert second.json()["reused"] is True
+    assert response.json()["reused"] is True
+    assert response.json()["jobId"] is None
     assert len(repository.rows) == 1  # no duplicate row
+    assert jobs.jobs == {} and queue.enqueued == []  # nothing queued
+
+
+# ----------------------------------------------------------- job rerun (IN-7)
+async def rerun(app, *, token: str | None, job_id: str) -> httpx.Response:
+    headers = {"authorization": f"Bearer {token}"} if token else {}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        return await client.post(f"/internal/jobs/{job_id}/rerun", headers=headers)
+
+
+async def test_rerun_requeues_a_finished_job(app, repository, jobs, queue):
+    job = await jobs.create_job(kind="ingest", triggered_by="user-1", document_ids=["doc-1"])
+    await jobs.finish(job["id"], status="failed", stats={}, error="boom")
+
+    response = await rerun(app, token=make_token(), job_id=job["id"])
+
+    assert response.status_code == 200
+    assert response.json() == {"id": job["id"], "status": "queued"}
+    assert jobs.jobs[job["id"]]["status"] == "queued"
+    assert jobs.job_documents[job["id"]][0]["status"] == "pending"
+    assert queue.enqueued == [(INGESTION_TASK_NAME, job["id"])]
+    # The rerun itself is audited.
+    assert repository.audits[-1]["action"] == "corpus.ingest.rerun"
+    assert repository.audits[-1]["resource_id"] == job["id"]
+
+
+async def test_rerun_rejects_running_or_unknown_jobs(app, jobs, queue):
+    running = await jobs.create_job(kind="ingest", triggered_by="user-1", document_ids=["d"])
+    await jobs.mark_running(running["id"])
+
+    still_running = await rerun(app, token=make_token(), job_id=running["id"])
+    unknown = await rerun(app, token=make_token(), job_id=str(uuid.uuid4()))
+
+    assert still_running.status_code == 409
+    assert unknown.status_code == 409
+    assert queue.enqueued == []
+
+
+async def test_rerun_requires_service_jwt(app):
+    response = await rerun(app, token=None, job_id="any")
+    assert response.status_code == 401
