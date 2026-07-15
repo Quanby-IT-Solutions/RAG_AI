@@ -1,0 +1,16 @@
+{
+	"name": "@repo/rag",
+	"version": "0.0.1",
+	"description": "Thin workspace wrapper so Turborepo/pnpm orchestrate the Python RAG service. Real dependency management lives in pyproject.toml (uv).",
+	"private": true,
+	"scripts": {
+		"dev": "uv run uvicorn --factory app.main:create_app --host 0.0.0.0 --port 8000 --reload",
+		"build": "uv sync",
+		"start": "uv run --no-sync uvicorn --factory app.main:create_app --host 0.0.0.0 --port 8000",
+		"lint": "node scripts/ruff.cjs check",
+		"format": "node scripts/ruff.cjs format",
+		"format:fix": "node scripts/ruff.cjs format:fix",
+		"test": "uv run pytest",
+		"test:cov": "uv run pytest"
+	}
+}

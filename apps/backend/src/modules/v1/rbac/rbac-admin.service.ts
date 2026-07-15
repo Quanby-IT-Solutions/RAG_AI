@@ -17,6 +17,7 @@ import {
 } from "@repo/contracts"
 import { permissions, rolePermissions, roles, userRoles, users } from "@repo/db/schema"
 
+import { AuditService } from "@/common/audit/audit.service"
 import { db } from "@/common/database/database.client"
 import { RbacCacheService } from "@/common/rbac/rbac-cache.service"
 import { RbacService } from "@/common/rbac/rbac.service"
@@ -27,7 +28,8 @@ const PERMISSION_CATALOG = new Set<string>(PERMISSION_NAMES)
 export class RbacAdminService {
 	constructor(
 		private readonly rbacService: RbacService,
-		private readonly cacheService: RbacCacheService
+		private readonly cacheService: RbacCacheService,
+		private readonly auditService: AuditService
 	) {}
 
 	// ---------------------------------------------------------------- roles
@@ -186,17 +188,54 @@ export class RbacAdminService {
 		}))
 	}
 
-	async assignUserRole(payload: AssignRoleRequest) {
+	async assignUserRole(payload: AssignRoleRequest, actorId: string) {
+		const before = await this.getUserRoleNames(payload.userId)
 		await this.rbacService.assignRole(payload.userId, payload.roleName)
+		const after = await this.getUserRoleNames(payload.userId)
+
+		// Flow E: role assignment is a privileged state change — audit actor,
+		// action, and before -> after role sets on the append-only spine.
+		await this.auditService.writeAudit({
+			actorId,
+			actorType: "user",
+			action: "users.roles.assign",
+			resourceType: "user",
+			resourceId: payload.userId,
+			before: { roles: before },
+			after: { roles: after },
+		})
+
 		return { success: true, userId: payload.userId, roleName: payload.roleName }
 	}
 
-	async removeUserRole(payload: RemoveRoleRequest) {
+	async removeUserRole(payload: RemoveRoleRequest, actorId: string) {
+		const before = await this.getUserRoleNames(payload.userId)
 		await this.rbacService.removeRole(payload.userId, payload.roleName)
+		const after = await this.getUserRoleNames(payload.userId)
+
+		await this.auditService.writeAudit({
+			actorId,
+			actorType: "user",
+			action: "users.roles.remove",
+			resourceType: "user",
+			resourceId: payload.userId,
+			before: { roles: before },
+			after: { roles: after },
+		})
+
 		return { success: true, userId: payload.userId, roleName: payload.roleName }
 	}
 
 	// -------------------------------------------------------------- helpers
+	private async getUserRoleNames(userId: string): Promise<string[]> {
+		const rows = await db
+			.select({ name: roles.name })
+			.from(userRoles)
+			.innerJoin(roles, eq(userRoles.roleId, roles.id))
+			.where(eq(userRoles.userId, userId))
+		return rows.map(row => row.name).sort()
+	}
+
 	private async getRoleRowOrThrow(id: number) {
 		const [role] = await db.select().from(roles).where(eq(roles.id, id))
 		if (!role) {

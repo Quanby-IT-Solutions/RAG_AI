@@ -42,9 +42,10 @@ interface DashboardOverviewProps {
 }
 
 export function DashboardOverview({ user, access }: DashboardOverviewProps) {
-	const canReadPosts = canAccess(access, { requiredPermission: "posts:read" })
+	// Todos example module is ungated since F3 removed the legacy `posts:*` keys.
+	const canReadPosts = true
 	const canReadUsers = canAccess(access, {
-		requiredPermission: ["users:read", "users:manage"],
+		requiredPermission: ["users.accounts.manage", "users.roles.manage"],
 	})
 
 	const todos = useTodosQuery()

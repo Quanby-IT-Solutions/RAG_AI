@@ -205,6 +205,9 @@ importers:
       lru-cache:
         specifier: ^11.0.0
         version: 11.2.7
+      multer:
+        specifier: ^2.0.2
+        version: 2.0.2
       nestjs-pino:
         specifier: ^4.6.1
         version: 4.6.1(@nestjs/common@11.1.11(class-transformer@0.5.1)(class-validator@0.14.3)(reflect-metadata@0.2.2)(rxjs@7.8.2))(pino-http@11.0.0)(pino@10.3.1)(rxjs@7.8.2)
@@ -257,6 +260,9 @@ importers:
       '@types/jest':
         specifier: ^30.0.0
         version: 30.0.0
+      '@types/multer':
+        specifier: ^2.0.0
+        version: 2.1.0
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.3
@@ -304,6 +310,8 @@ importers:
         version: 5.9.3
 
   apps/mobile: {}
+
+  apps/rag: {}
 
   apps/web:
     dependencies:
@@ -3895,6 +3903,9 @@ packages:
 
   '@types/mssql@9.1.8':
     resolution: {integrity: sha512-mt9h5jWj+DYE5jxnKaWSV/GqDf9FV52XYVk6T3XZF69noEe+JJV6MKirii48l81+cjmAkSq+qeKX+k61fHkYrQ==}
+
+  '@types/multer@2.1.0':
+    resolution: {integrity: sha512-zYZb0+nJhOHtPpGDb3vqPjwpdeGlGC157VpkqNQL+UU2qwoacoQ7MpsAmUptI/0Oa127X32JzWDqQVEXp2RcIA==}
 
   '@types/node@22.19.3':
     resolution: {integrity: sha512-1N9SBnWYOJTrNZCdh/yJE+t910Y128BoyY+zBLWhL3r0TYzlTmFdXrPwHL9DyFZmlEXNQQolTZh3KHV31QDhyA==}
@@ -11956,6 +11967,10 @@ snapshots:
       tedious: 19.2.0
     transitivePeerDependencies:
       - supports-color
+
+  '@types/multer@2.1.0':
+    dependencies:
+      '@types/express': 5.0.6
 
   '@types/node@22.19.3':
     dependencies:

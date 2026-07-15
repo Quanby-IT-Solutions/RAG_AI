@@ -1,5 +1,7 @@
 import {
+	BubbleChatIcon,
 	DashboardSquare01Icon,
+	FolderLibraryIcon,
 	Task01Icon,
 	Ticket01Icon,
 	UserMultipleIcon,
@@ -33,17 +35,34 @@ export const navItems: readonly DashboardNavItem[] = [
 		icon: Ticket01Icon,
 	},
 	{
+		// Example module: ungated since F3 removed the legacy `posts:*` keys.
 		label: "Todos / Posts",
 		href: "/todos",
 		icon: Task01Icon,
-		requiredPermission: "posts:read",
+	},
+	{
+		// Corpus list + PDF upload (IN-1). Visible with read access; the upload
+		// action itself needs corpus.documents.upload + corpus.ingest.run
+		// (enforced server-side by the RbacGuard).
+		label: "Corpus",
+		href: "/corpus",
+		icon: FolderLibraryIcon,
+		requiredPermission: "corpus.documents.read",
+	},
+	{
+		// Grounded Q&A over the corpus (CH-1). Only users who can ask see it;
+		// the chat route itself is guarded server-side by chat.query.submit.
+		label: "Chat",
+		href: "/chat",
+		icon: BubbleChatIcon,
+		requiredPermission: "chat.query.submit",
 	},
 	{
 		label: "User Management",
 		href: "/user-management",
 		icon: UserMultipleIcon,
 		section: "Administration",
-		requiredPermission: ["users:read", "users:manage"],
+		requiredPermission: ["users.accounts.manage", "users.roles.manage"],
 	},
 ]
 

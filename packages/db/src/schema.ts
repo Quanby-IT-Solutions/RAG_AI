@@ -1,7 +1,23 @@
-import { defineRelations } from "drizzle-orm"
-import { index, primaryKey } from "drizzle-orm/pg-core"
+import { defineRelations, sql } from "drizzle-orm"
+import { customType, index, primaryKey } from "drizzle-orm/pg-core"
 
 import { createTable } from "./utils/table.js"
+
+/**
+ * pgvector column (Tech Plan §3, D5). Dimension is pinned to 1536 — the same
+ * truth as the Python PINNED_EMBEDDING_DIMENSIONS constant; the RAG service
+ * asserts the two match at boot (dimension guard, Tech Plan §4).
+ * R-DDL spike (packages/db/README.md): drizzle-kit beta emits this DDL cleanly.
+ */
+const vector1536 = customType<{ data: number[]; driverData: string }>({
+	dataType: () => "vector(1536)",
+	toDriver: v => `[${v.join(",")}]`,
+})
+
+/** Full-text search vector — DB-maintained via GENERATED ALWAYS AS (§3). */
+const tsvector = customType<{ data: string }>({
+	dataType: () => "tsvector",
+})
 
 // ============================================================================
 // BETTER AUTH TABLES
@@ -177,6 +193,150 @@ export const rolePermissions = createTable(
 )
 
 // ============================================================================
+// AUDIT LOG (append-only)
+// ============================================================================
+
+/**
+ * Append-only audit spine (Tech Plan §6). INSERT-only for every writer
+ * (NestJS now, Python later): a hand-augmented migration installs a
+ * BEFORE UPDATE OR DELETE trigger that raises, enforcing immutability at the
+ * DB. No `updatedAt`, no FKs — actors may be users, services, or the system.
+ */
+export const auditLog = createTable("audit_log", t => ({
+	id: t.bigserial("id", { mode: "number" }).primaryKey(),
+	actorId: t.text("actor_id"),
+	actorType: t
+		.text("actor_type")
+		.notNull()
+		.$type<"user" | "service" | "system">(),
+	action: t.text("action").notNull(),
+	resourceType: t.text("resource_type").notNull(),
+	resourceId: t.text("resource_id"),
+	before: t.jsonb("before").$type<unknown>(),
+	after: t.jsonb("after").$type<unknown>(),
+	createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}))
+
+// ============================================================================
+// DOCUMENTS (ingestion — Flow A)
+// ============================================================================
+
+/**
+ * One ingested source file, normalized to {text, source, metadata} and
+ * identified by its sha256 `contentHash` (idempotent upsert key, Flow A/A1).
+ * Schema is OWNED by the ingestion epic (DOMAIN-MODEL cross-epic rule).
+ * Written by the Python RAG service (no Python migrations — Drizzle owns DDL);
+ * read by the NestJS gateway for the corpus list.
+ *
+ * Status follows the R1 document state machine:
+ * registered -> processing -> indexed | failed (failed re-enters processing on
+ * retry; identical content re-ingest is a no-op). IN-1 sets `processing` on a
+ * successful normalize and `failed` (+ `error` reason) on parse failure;
+ * `indexed` arrives with IN-2.
+ */
+export const documents = createTable("documents", t => ({
+	// gen_random_uuid() — pgcrypto; the migration installs the extension defensively.
+	id: t.uuid("id").primaryKey().defaultRandom(),
+	sourceUri: t.text("source_uri").notNull(),
+	docType: t.text("doc_type").notNull(),
+	contentHash: t.text("content_hash").notNull().unique(),
+	status: t
+		.text("status")
+		.notNull()
+		.default("registered")
+		.$type<"registered" | "processing" | "indexed" | "failed">(),
+	// Normalization payload: page/section info, ingest timestamp, original filename.
+	metadata: t.jsonb("metadata").$type<unknown>(),
+	error: t.text("error"),
+	ingestedAt: t.timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),
+}))
+
+// ============================================================================
+// CHUNKS (ingestion — Flow A, IN-2)
+// ============================================================================
+
+/**
+ * One retrievable slice of a document (DOMAIN-MODEL `chunks`). Written by the
+ * Python RAG service (chunk -> batch-embed -> upsert), read by retrieval
+ * (RT-1/RT-2). The `ingestion` epic owns this schema; other epics extend it
+ * additively only (RT-6 adds parent_chunk_id, deliberately absent here).
+ *
+ * Idempotency invariant: upsert ON CONFLICT (content_hash) — re-running
+ * indexing on the same document never duplicates rows. `embedding_model`
+ * stamps the pinned model per row so a future model change (IN-8) is
+ * detectable. `tsv` is a DB-maintained generated column; the HNSW
+ * (embedding) and GIN (tsv) indexes are hand-augmented in the migration
+ * (drizzle can't emit them — Tech Plan §3 / Risk R-DDL).
+ */
+export const chunks = createTable("chunks", t => ({
+	id: t.uuid("id").primaryKey().defaultRandom(),
+	documentId: t
+		.uuid("document_id")
+		.notNull()
+		.references(() => documents.id, { onDelete: "cascade" }),
+	content: t.text("content").notNull(),
+	embedding: vector1536("embedding").notNull(),
+	tsv: tsvector("tsv").generatedAlwaysAs(sql`to_tsvector('english', "content")`),
+	// Page/section carried over from the document normalization payload.
+	metadata: t.jsonb("metadata").$type<unknown>(),
+	contentHash: t.text("content_hash").notNull().unique(),
+	chunkIndex: t.integer("chunk_index").notNull(),
+	embeddingModel: t.text("embedding_model").notNull(),
+}))
+
+// ============================================================================
+// CONVERSATIONS + MESSAGES (generation — Flow B, GN-1)
+// ============================================================================
+
+/**
+ * One End User chat session (DOMAIN-MODEL `conversations`). R1 is single-turn:
+ * every /chat request creates a NEW conversation (Core Flows, Flow B). Schema
+ * is OWNED by the generation epic — `generation` owns writes; `reporting` and
+ * `observability` read only (cross-epic rule). Rows are written by the Python
+ * RAG service (no Python migrations — Drizzle owns DDL).
+ */
+export const conversations = createTable("conversations", t => ({
+	id: t.uuid("id").primaryKey().defaultRandom(),
+	userId: t
+		.text("user_id")
+		.notNull()
+		.references(() => users.id, { onDelete: "cascade" }),
+	createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}))
+
+/**
+ * One turn in a conversation (DOMAIN-MODEL `messages`). The assistant row
+ * carries the grounded-answer envelope: `citations` (resolved chunk ->
+ * document source/section), `retrievedChunks` (the RT-1 retrieved record for
+ * the turn — distinct from GN-2's "used in prompt"), `tokenUsage`, `traceId`,
+ * and `modelUsed`. `turnIndex` is the stable ordering key within a
+ * conversation (created_at alone can tie).
+ */
+export const messages = createTable(
+	"messages",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		conversationId: t
+			.uuid("conversation_id")
+			.notNull()
+			.references(() => conversations.id, { onDelete: "cascade" }),
+		role: t
+			.text("role")
+			.notNull()
+			.$type<"user" | "assistant">(),
+		content: t.text("content").notNull(),
+		citations: t.jsonb("citations").$type<unknown>(),
+		retrievedChunks: t.jsonb("retrieved_chunks").$type<unknown>(),
+		tokenUsage: t.jsonb("token_usage").$type<unknown>(),
+		traceId: t.text("trace_id"),
+		modelUsed: t.text("model_used"),
+		turnIndex: t.integer("turn_index").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("messages_conversation_id_idx").on(t.conversationId)]
+)
+
+// ============================================================================
 // RELATIONS
 // ============================================================================
 export const relations = defineRelations(
@@ -268,6 +428,11 @@ export const schema = Object.assign(
 		permissions,
 		userRoles,
 		rolePermissions,
+		auditLog,
+		documents,
+		chunks,
+		conversations,
+		messages,
 	},
 	relations
 )

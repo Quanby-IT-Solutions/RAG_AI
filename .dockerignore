@@ -4,6 +4,12 @@ npm-debug.log
 yarn-error.log
 pnpm-debug.log
 
+# Python (apps/rag)
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
 # Testing
 coverage
 *.test.js

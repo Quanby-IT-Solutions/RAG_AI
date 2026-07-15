@@ -154,7 +154,7 @@ export function UsersPanel() {
 							<HugeiconsIcon icon={UserGroupIcon} strokeWidth={2} />
 						</EmptyMedia>
 						<EmptyTitle>No users found</EmptyTitle>
-						<EmptyDescription>Users will appear here once they sign up.</EmptyDescription>
+						<EmptyDescription>Users will appear here once an administrator provisions them.</EmptyDescription>
 					</EmptyHeader>
 				</Empty>
 			) : null}

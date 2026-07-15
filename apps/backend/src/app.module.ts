@@ -15,6 +15,7 @@ import { skipStrictThrottle } from "@/shared/decorators/strict-throttle.decorato
 import { RbacGuard } from "@/shared/guards/rbac.guard"
 import { ThrottlerProxyGuard } from "@/shared/guards/throttler-proxy.guard"
 
+import { AuditModule } from "./common/audit/audit.module"
 import { ORPCCommonModule } from "./common/orpc/orpc.module"
 import { RbacModule } from "./common/rbac/rbac.module"
 import { env } from "./config/env.config"
@@ -58,6 +59,8 @@ import { env } from "./config/env.config"
 		AuthModule.forRoot({ auth: getAuth(), disableControllers: true }),
 		// oRPC setup
 		ORPCCommonModule,
+		// Append-only audit spine (global)
+		AuditModule,
 		// RBAC services
 		RbacModule,
 		// Versioned modules

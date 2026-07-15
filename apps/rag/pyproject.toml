@@ -1,0 +1,44 @@
+[project]
+name = "rag"
+version = "0.0.1"
+description = "Python RAG service (FastAPI) — internal-only, called by the NestJS BFF over the Docker network."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "asyncpg>=0.30",
+    "redis>=5.2",
+    "langsmith>=0.3",
+    "langfuse>=3.0",
+    "pyjwt>=2.10",
+    "langchain-community>=0.3",
+    "langchain-text-splitters>=0.3",
+    "openai>=1.60",
+    "pypdf>=5.1",
+    "python-multipart>=0.0.20",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "ruff>=0.9",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "ASYNC"]

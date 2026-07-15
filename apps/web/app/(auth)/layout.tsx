@@ -14,7 +14,7 @@ export default function AuthLayout({
 				<header className="flex flex-col gap-4 text-center">
 					<Logo href="/" className="self-center" />
 					<p className="text-muted-foreground">
-						Authentication powered by Better Auth — connect with email or social providers.
+						Sign in with the email and password provisioned by your administrator.
 					</p>
 					<div className="flex flex-wrap items-center justify-center gap-2 text-sm">
 						<Link
@@ -22,13 +22,6 @@ export default function AuthLayout({
 							href="/login"
 						>
 							Login
-						</Link>
-						<span aria-hidden="true">•</span>
-						<Link
-							className={cn("text-muted-foreground underline-offset-4 hover:underline")}
-							href="/register"
-						>
-							Register
 						</Link>
 						<span aria-hidden="true">•</span>
 						<Link

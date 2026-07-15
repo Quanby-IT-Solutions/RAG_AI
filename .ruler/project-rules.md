@@ -97,7 +97,7 @@ pnpm lint:ws          # Check workspace dependencies (sherif)
 ### Database
 
 ```bash
-pnpm db:push          # Push schema changes to database
+pnpm db:migrate       # Apply ordered migrations (db:push removed)
 pnpm db:generate      # Generate Drizzle types/migrations
 pnpm db:migrate       # Run database migrations
 pnpm db:studio        # Open Drizzle Studio GUI

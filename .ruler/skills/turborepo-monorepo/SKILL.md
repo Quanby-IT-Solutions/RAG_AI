@@ -85,7 +85,7 @@ pnpm lint:ws          # Check workspace deps (sherif)
 
 ### Database
 ```bash
-pnpm db:push          # Push schema changes (dev)
+pnpm db:migrate       # Apply ordered migrations (db:push removed)
 pnpm db:generate      # Generate migration files
 pnpm db:migrate       # Run migrations
 pnpm db:studio        # Open Drizzle Studio

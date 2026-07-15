@@ -21,15 +21,9 @@ test.describe("login page", () => {
 		await expect(page.getByRole("button", { name: /^login$/i })).toBeVisible()
 	})
 
-	test("has a link to the register page", async ({ page }) => {
-		const link = page.getByRole("link", { name: /sign up/i })
-		await expect(link).toBeVisible()
-		await expect(link).toHaveAttribute("href", "/register")
-	})
-
-	test("navigates to register when Sign up is clicked", async ({ page }) => {
-		await page.getByRole("link", { name: /sign up/i }).click()
-		await expect(page).toHaveURL(/\/register/)
+	test("has no sign-up / register link (accounts are admin-provisioned)", async ({ page }) => {
+		await expect(page.getByRole("link", { name: /sign up/i })).toHaveCount(0)
+		await expect(page.getByRole("link", { name: /register/i })).toHaveCount(0)
 	})
 
 	test("shows an error and stays on /login with invalid credentials", async ({ page }) => {
@@ -60,39 +54,28 @@ test.describe("login page", () => {
 	})
 })
 
-test.describe("register page", () => {
-	test.beforeEach(async ({ page }) => {
-		await page.goto("/register")
+test.describe("no self-registration", () => {
+	test("register page does not exist (404)", async ({ page }) => {
+		const response = await page.goto("/register")
+		expect(response?.status()).toBe(404)
 	})
 
-	test("displays the register heading", async ({ page }) => {
-		await expect(page.getByRole("heading", { name: /create an account/i })).toBeVisible()
-	})
+	test("sign-up API endpoint is disabled", async ({ request }) => {
+		test.skip(!process.env.E2E_AUTH_API_URL, "Requires backend")
 
-	test("has a name input", async ({ page }) => {
-		await expect(page.getByLabel(/name/i)).toBeVisible()
-	})
+		const authApi = process.env.E2E_AUTH_API_URL ?? "http://localhost:3000/api/v1/auth/"
+		const webOrigin = process.env.BASE_URL ?? "http://localhost:3001"
 
-	test("has an email input", async ({ page }) => {
-		await expect(page.getByLabel(/email/i)).toBeVisible()
-	})
+		const res = await request.post(`${authApi}sign-up/email`, {
+			headers: { "Content-Type": "application/json", Origin: webOrigin },
+			data: {
+				email: `e2e-blocked-${Date.now()}@example.com`,
+				password: "SomePassword123",
+				name: "Blocked Signup",
+			},
+		})
 
-	test("has a password input", async ({ page }) => {
-		await expect(page.getByLabel("Password", { exact: true })).toBeVisible()
-	})
-
-	test("has a create account submit button", async ({ page }) => {
-		await expect(page.getByRole("button", { name: /create account/i })).toBeVisible()
-	})
-
-	test("has a link back to the login page", async ({ page }) => {
-		const link = page.getByRole("link", { name: /sign in/i })
-		await expect(link).toBeVisible()
-		await expect(link).toHaveAttribute("href", "/login")
-	})
-
-	test("navigates to login when Sign in is clicked", async ({ page }) => {
-		await page.getByRole("link", { name: /sign in/i }).click()
-		await expect(page).toHaveURL(/\/login/)
+		expect(res.ok()).toBe(false)
+		expect(res.status()).toBe(400)
 	})
 })

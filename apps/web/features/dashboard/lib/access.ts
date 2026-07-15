@@ -2,7 +2,8 @@ import { ADMIN_ROLE, type PermissionName } from "@repo/contracts"
 
 export interface AccessProfile {
 	roles: readonly string[]
-	permissions: readonly PermissionName[]
+	/** Granted keys: catalog `PermissionName`s plus optional wildcard grants (e.g. `corpus.*`). */
+	permissions: readonly string[]
 }
 
 export type PermissionRequirement = PermissionName | readonly PermissionName[]
@@ -21,12 +22,21 @@ function toArray<T extends string>(value: T | readonly T[] | undefined): readonl
 }
 
 function hasPermission(access: AccessProfile, requiredPermission: PermissionName): boolean {
-	if (access.permissions.includes(requiredPermission)) {
+	const granted = access.permissions
+	if (granted.includes(requiredPermission)) {
 		return true
 	}
 
-	const [resource] = requiredPermission.split(":")
-	return access.permissions.includes(`${resource}:*` as PermissionName)
+	// Progressive dotted-prefix wildcards: a granted `corpus.*` or
+	// `corpus.documents.*` satisfies a required `corpus.documents.upload`.
+	const segments = requiredPermission.split(".")
+	for (let i = 1; i < segments.length; i++) {
+		if (granted.includes(`${segments.slice(0, i).join(".")}.*`)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 export function canAccess(access: AccessProfile, item: AccessRequirement): boolean {

@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url"
 import react from "@vitejs/plugin-react"
-import { defineConfig } from "vitest/config"
+import { configDefaults, defineConfig } from "vitest/config"
 
 // ESM-safe directory resolution (this package is "type": "module")
 const rootDir = fileURLToPath(new URL(".", import.meta.url))
@@ -13,6 +13,8 @@ export default defineConfig({
 		setupFiles: ["./vitest.setup.ts"],
 		globals: true,
 		passWithNoTests: true,
+		// Never pick up stale copies of specs from Next build output.
+		exclude: [...configDefaults.exclude, "**/.next/**"],
 		coverage: {
 			provider: "v8",
 			reporter: ["text", "json", "json-summary", "html"],

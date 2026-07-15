@@ -44,6 +44,11 @@ export const authEnv = createEnv({
 		EMAIL_VERIFICATION_ENABLED: booleanFromEnv.optional().default(true),
 		EMAIL_VERIFICATION_REQUIRED: booleanFromEnv.optional().default(false),
 
+		// Self-registration. RAGP accounts are admin-provisioned, so public
+		// sign-up is disabled by default. Set AUTH_SIGN_UP_ENABLED=true only
+		// for environments that intentionally allow self-service accounts.
+		AUTH_SIGN_UP_ENABLED: booleanFromEnv.optional().default(false),
+
 		// Auth rate limiting
 		AUTH_RATE_LIMIT_WINDOW: z.coerce.number().int().positive().optional().default(60),
 		AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().optional().default(10),
@@ -146,6 +151,10 @@ export function createAuth(): ReturnType<typeof betterAuth> {
 		},
 		emailAndPassword: {
 			enabled: true,
+			// Admin-provisioned accounts only: the public sign-up endpoint is
+			// disabled unless AUTH_SIGN_UP_ENABLED=true. Server-side user
+			// creation (seeds, future admin console) is unaffected.
+			disableSignUp: !authEnv.AUTH_SIGN_UP_ENABLED,
 			requireEmailVerification: verificationRequired,
 			sendResetPassword: async ({ user, token }) => {
 				const resetUrl = `${appWebUrl}/reset-password?token=${token}`
@@ -166,6 +175,10 @@ export function createAuth(): ReturnType<typeof betterAuth> {
 				prompt: "select_account",
 				clientId: authEnv.GOOGLE_CLIENT_ID as string,
 				clientSecret: authEnv.GOOGLE_CLIENT_SECRET as string,
+				// Social sign-in must never create new accounts while the
+				// product is admin-provisioned only.
+				disableSignUp: !authEnv.AUTH_SIGN_UP_ENABLED,
+				disableImplicitSignUp: !authEnv.AUTH_SIGN_UP_ENABLED,
 			},
 		},
 		trustedOrigins: authEnv.BETTER_AUTH_TRUSTED_ORIGINS?.split(",") ?? [],

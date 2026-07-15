@@ -13,7 +13,6 @@ import {
 	FieldError,
 	FieldGroup,
 	FieldLabel,
-	FieldSeparator,
 } from "@/core/components/ui/field"
 import { Input } from "@/core/components/ui/input"
 import { useRateLimitCountdown } from "@/core/hooks/use-rate-limit-countdown"
@@ -21,7 +20,6 @@ import { parseRateLimitError } from "@/core/lib/rate-limit-utils"
 import { cn } from "@/core/lib/utils"
 import { PasswordInput } from "@/features/auth/components/password-input"
 import { RateLimitBanner } from "@/features/auth/components/rate-limit-banner"
-import { SocialLoginButtons } from "@/features/auth/components/social-login-buttons"
 import { TermsPrivacyNote } from "@/features/auth/components/terms-privacy-note"
 import { ResendVerificationForm } from "@/features/auth/verify-email/components/resend-verification-form"
 
@@ -171,23 +169,9 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
 								</Button>
 							</Field>
 
-							<FieldSeparator className="*:data-[slot=field-separator-content]:bg-card">
-								Or continue with
-							</FieldSeparator>
-
-							<SocialLoginButtons action="login" />
-
 							<FieldDescription className="text-center">
-								Don&apos;t have an account?{" "}
-								<Link
-									className={cn(
-										buttonVariants({ variant: "link" }),
-										"text-muted-foreground h-auto px-0"
-									)}
-									href="/register"
-								>
-									Sign up
-								</Link>
+								Accounts are provisioned by an administrator. Contact your admin if you need
+								access.
 							</FieldDescription>
 						</FieldGroup>
 					</form>

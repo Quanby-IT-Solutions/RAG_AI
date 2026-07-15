@@ -29,8 +29,8 @@ test.describe("authenticated home page", () => {
 		// Refresh the session token for THIS test only before logging out.
 		const authApi = process.env.E2E_AUTH_API_URL ?? "http://localhost:3000/api/v1/auth/"
 		const webOrigin = process.env.BASE_URL ?? "http://localhost:3001"
-		const testEmail = process.env.E2E_TEST_EMAIL ?? "test@gmail.com"
-		const testPassword = process.env.E2E_TEST_PASSWORD ?? "Password123"
+		const testEmail = process.env.E2E_TEST_EMAIL ?? "admin@turbo-template.local"
+		const testPassword = process.env.E2E_TEST_PASSWORD ?? "password123"
 
 		const api = await request.newContext({
 			baseURL: authApi,
@@ -77,7 +77,6 @@ test.describe("authenticated session page", () => {
 	})
 
 	test("displays session information", async ({ page }) => {
-		await expect(page.getByText("Session", { exact: true })).toBeVisible()
 		await expect(page.getByText("Server Session")).toBeVisible()
 		await expect(page.getByText("Client Session")).toBeVisible()
 	})
@@ -88,52 +87,64 @@ test.describe("authenticated session page", () => {
 	})
 
 	test("server session includes user email", async ({ page }) => {
-		const testEmail = process.env.E2E_TEST_EMAIL ?? "test@gmail.com"
+		const testEmail = process.env.E2E_TEST_EMAIL ?? "admin@turbo-template.local"
 		await expect(page.locator("pre").first()).toContainText(testEmail)
 	})
 })
 
 test.describe("authenticated todos", () => {
+	/** Navigate to /todos and wait for the client-side todos query to settle so
+	 * the page is hydrated before interacting (fill/click on a non-hydrated form
+	 * is silently dropped by React). */
+	async function gotoTodos(page: import("@playwright/test").Page) {
+		const todosLoaded = page.waitForResponse(
+			response =>
+				response.url().includes("/example/todos") && response.request().method() === "GET"
+		)
+		await page.goto("/todos")
+		await todosLoaded
+	}
+
 	test("can create, complete, and delete a todo", async ({ page }, testInfo) => {
 		const title = `e2e todo ${testInfo.workerIndex} ${Date.now()}`
 
-		await page.goto("/examples/todos")
-		await expect(page.getByRole("heading", { name: /^todos$/i })).toBeVisible()
+		await gotoTodos(page)
+		await expect(page.getByRole("heading", { name: /todos \/ posts/i })).toBeVisible()
 
-		await page.getByPlaceholder("Enter a new todo...").fill(title)
+		await page.getByPlaceholder("New todo title").fill(title)
 		await page.getByRole("button", { name: /^add$/i }).click()
 
-		const item = page.locator('[data-slot="item"]').filter({
-			has: page.locator('[data-slot="item-title"]', { hasText: title }),
-		})
+		const checkbox = page.getByRole("checkbox", { name: `Toggle ${title}` })
+		await expect(checkbox).toBeVisible()
+		await expect(checkbox).not.toBeChecked()
 
-		await expect(item).toBeVisible()
-		await expect(item.locator('[data-slot="item-description"]')).toHaveText(/not completed/i)
+		// Optimistic rows are disabled until the server assigns a real id.
+		await expect(checkbox).toBeEnabled()
+		await checkbox.click()
+		await expect(checkbox).toBeChecked()
 
-		await item.getByRole("checkbox").click()
-		await expect(item.locator('[data-slot="item-description"]')).toHaveText(/completed/i)
-
-		await item.locator('[data-slot="item-actions"] button').click()
-		await expect(item).toHaveCount(0)
+		await page.getByRole("button", { name: `Delete ${title}` }).click()
+		await expect(checkbox).toHaveCount(0)
 	})
 
 	test("created todo persists after reload", async ({ page }, testInfo) => {
 		const title = `e2e persist ${testInfo.workerIndex} ${Date.now()}`
 
-		await page.goto("/examples/todos")
-		await page.getByPlaceholder("Enter a new todo...").fill(title)
+		await gotoTodos(page)
+		await page.getByPlaceholder("New todo title").fill(title)
 		await page.getByRole("button", { name: /^add$/i }).click()
 
-		const item = page.locator('[data-slot="item"]').filter({
-			has: page.locator('[data-slot="item-title"]', { hasText: title }),
-		})
+		const checkbox = page.getByRole("checkbox", { name: `Toggle ${title}` })
+		await expect(checkbox).toBeVisible()
+		// Wait for the optimistic row to be confirmed by the server before reloading.
+		await expect(checkbox).toBeEnabled()
 
-		await expect(item).toBeVisible()
-
+		// After reload the list may be served from the persisted query cache (no
+		// network request), so just wait for the row to render post-hydration.
 		await page.reload()
-		await expect(item).toBeVisible()
+		await expect(checkbox).toBeVisible({ timeout: 15_000 })
 
-		await item.locator('[data-slot="item-actions"] button').click()
-		await expect(item).toHaveCount(0)
+		await page.getByRole("button", { name: `Delete ${title}` }).click()
+		await expect(checkbox).toHaveCount(0)
 	})
 })

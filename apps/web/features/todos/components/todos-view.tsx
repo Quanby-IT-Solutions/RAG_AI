@@ -5,7 +5,6 @@ import { Task01Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
 import { PageHeader } from "@/core/components/page-header"
-import { Badge } from "@/core/components/ui/badge"
 import { Button } from "@/core/components/ui/button"
 import {
 	Card,
@@ -25,7 +24,6 @@ import { Input } from "@/core/components/ui/input"
 import { Skeleton } from "@/core/components/ui/skeleton"
 import { useRateLimitToast } from "@/core/hooks/use-rate-limit-toast"
 import { ApiError } from "@/core/lib/api-error"
-import { canAccess, type AccessProfile } from "@/features/dashboard/lib/access"
 import {
 	useCreateTodoMutation,
 	useTodoReplayErrors,
@@ -33,14 +31,12 @@ import {
 } from "@/features/todos/api/todos.hooks"
 import { TodoItem } from "@/features/todos/components/todo-item"
 
-interface TodosViewProps {
-	access: AccessProfile
-}
-
-export function TodosView({ access }: TodosViewProps) {
-	const canCreate = canAccess(access, { requiredPermission: "posts:create" })
-	const canEdit = canAccess(access, { requiredPermission: "posts:edit" })
-	const canDelete = canAccess(access, { requiredPermission: "posts:delete" })
+// F3 removed the legacy `posts:*` colon keys; this example view is ungated
+// (auth-only) until the module is retired, so every action is available.
+export function TodosView() {
+	const canCreate = true
+	const canEdit = true
+	const canDelete = true
 
 	const { data: todos, isLoading, isError, error } = useTodosQuery()
 	const createTodo = useCreateTodoMutation()
@@ -88,19 +84,14 @@ export function TodosView({ access }: TodosViewProps) {
 			<Card>
 				<CardHeader className="gap-2">
 					<CardTitle className="text-base">Your access</CardTitle>
-					<CardDescription>Effective permissions on the posts resource</CardDescription>
-					<div className="flex flex-wrap gap-1 pt-1">
-						<PermBadge label="create" granted={canCreate} />
-						<PermBadge label="edit" granted={canEdit} />
-						<PermBadge label="delete" granted={canDelete} />
-					</div>
+					<CardDescription>Example module — available to every signed-in user</CardDescription>
 				</CardHeader>
 				<CardContent>
 					<form className="flex gap-2" onSubmit={handleCreate}>
 						<Input
 							value={title}
 							onChange={e => setTitle(e.target.value)}
-							placeholder={canCreate ? "New todo title" : "You lack posts:create"}
+							placeholder="New todo title"
 							disabled={!canCreate}
 						/>
 						<Button type="submit" disabled={!canCreate || createRateLimit.isActive}>
@@ -159,13 +150,5 @@ export function TodosView({ access }: TodosViewProps) {
 				))}
 			</div>
 		</section>
-	)
-}
-
-function PermBadge({ label, granted }: { label: string; granted: boolean }) {
-	return (
-		<Badge variant={granted ? "default" : "outline"}>
-			posts:{label} {granted ? "✓" : "✗"}
-		</Badge>
 	)
 }

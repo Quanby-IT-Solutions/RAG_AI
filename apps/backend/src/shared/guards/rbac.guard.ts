@@ -11,6 +11,7 @@ import { fromNodeHeaders } from "better-auth/node"
 
 import { getAuth } from "@repo/auth"
 
+import { AuditService } from "@/common/audit/audit.service"
 import { RbacService } from "@/common/rbac/rbac.service"
 import { env } from "@/config/env.config"
 import { REQUIRED_PERMISSIONS_KEY } from "@/shared/decorators/require-permissions.decorator"
@@ -19,7 +20,8 @@ import { REQUIRED_PERMISSIONS_KEY } from "@/shared/decorators/require-permission
 export class RbacGuard implements CanActivate {
 	constructor(
 		private readonly reflector: Reflector,
-		private readonly rbacService: RbacService
+		private readonly rbacService: RbacService,
+		private readonly auditService: AuditService
 	) {}
 
 	async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -51,6 +53,9 @@ export class RbacGuard implements CanActivate {
 		// shape variation across library versions.
 		const request = context.switchToHttp().getRequest<{
 			headers: IncomingHttpHeaders
+			method?: string
+			originalUrl?: string
+			url?: string
 			session?: { user?: { id?: string } }
 			user?: { id?: string }
 		}>()
@@ -80,6 +85,23 @@ export class RbacGuard implements CanActivate {
 		const allowed = await this.rbacService.hasAllPermissions(userId, requiredPermissions)
 		if (allowed) {
 			return true
+		}
+
+		// Flow E: every RBAC denial is audited (append-only spine). The entry is
+		// written by the system on the actor's behalf; a failed audit write must
+		// never mask the 403 itself.
+		const route = `${request.method ?? "UNKNOWN"} ${request.originalUrl ?? request.url ?? "unknown"}`
+		try {
+			await this.auditService.writeAudit({
+				actorId: userId,
+				actorType: "system",
+				action: "rbac.denied",
+				resourceType: "route",
+				resourceId: route,
+				after: { requiredPermissions },
+			})
+		} catch {
+			// Swallow: denial auditing is best-effort; the 403 below is authoritative.
 		}
 
 		// Verbose in non-production to aid debugging; HttpExceptionFilter surfaces

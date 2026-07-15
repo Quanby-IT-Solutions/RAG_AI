@@ -1,6 +1,7 @@
 import { Controller } from "@nestjs/common"
 import { Implement } from "@orpc/nest"
 import { implement } from "@orpc/server"
+import { Session, type UserSession } from "@thallesp/nestjs-better-auth"
 
 import { v1 } from "@/config/api-versions.config"
 import { RequirePermissions } from "@/shared/decorators/require-permissions.decorator"
@@ -13,7 +14,7 @@ export class RbacController {
 	constructor(private readonly rbacAdminService: RbacAdminService) {}
 
 	// ---------------------------------------------------------------- roles
-	@RequirePermissions("users:read")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.roles.list)
 	async listRoles() {
 		return implement(v1.rbac.roles.list).handler(async () => {
@@ -22,7 +23,7 @@ export class RbacController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("users:manage")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.roles.create)
 	async createRole() {
 		return implement(v1.rbac.roles.create).handler(async ({ input }) => {
@@ -31,7 +32,7 @@ export class RbacController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("users:manage")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.roles.update)
 	async updateRole() {
 		return implement(v1.rbac.roles.update).handler(async ({ input }) => {
@@ -40,7 +41,7 @@ export class RbacController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("users:manage")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.roles.setPermissions)
 	async setRolePermissions() {
 		return implement(v1.rbac.roles.setPermissions).handler(async ({ input }) => {
@@ -49,7 +50,7 @@ export class RbacController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("users:manage")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.roles.delete)
 	async deleteRole() {
 		return implement(v1.rbac.roles.delete).handler(async ({ input }) => {
@@ -58,7 +59,7 @@ export class RbacController {
 	}
 
 	// ---------------------------------------------------------- permissions
-	@RequirePermissions("users:read")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.permissions.list)
 	async listPermissions() {
 		return implement(v1.rbac.permissions.list).handler(async () => {
@@ -67,7 +68,7 @@ export class RbacController {
 	}
 
 	// ---------------------------------------------------------------- users
-	@RequirePermissions("users:read")
+	@RequirePermissions("users.accounts.manage")
 	@Implement(v1.rbac.users.list)
 	async listUsers() {
 		return implement(v1.rbac.users.list).handler(async () => {
@@ -76,20 +77,20 @@ export class RbacController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("users:manage")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.users.assignRole)
-	async assignRole() {
+	async assignRole(@Session() session: UserSession) {
 		return implement(v1.rbac.users.assignRole).handler(async ({ input }) => {
-			return this.rbacAdminService.assignUserRole(input)
+			return this.rbacAdminService.assignUserRole(input, session.user.id)
 		})
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("users:manage")
+	@RequirePermissions("users.roles.manage")
 	@Implement(v1.rbac.users.removeRole)
-	async removeRole() {
+	async removeRole(@Session() session: UserSession) {
 		return implement(v1.rbac.users.removeRole).handler(async ({ input }) => {
-			return this.rbacAdminService.removeUserRole(input)
+			return this.rbacAdminService.removeUserRole(input, session.user.id)
 		})
 	}
 }

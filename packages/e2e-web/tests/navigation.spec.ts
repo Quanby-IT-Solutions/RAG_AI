@@ -19,15 +19,8 @@ test.describe("auth page cross-links", () => {
 		await expect(page).toHaveURL(/\/login/)
 	})
 
-	test("login page Sign up link navigates to /register", async ({ page }) => {
+	test("login page offers no register navigation", async ({ page }) => {
 		await page.goto("/login")
-		await page.getByRole("link", { name: /sign up/i }).click()
-		await expect(page).toHaveURL(/\/register/)
-	})
-
-	test("register page Sign in link navigates to /login", async ({ page }) => {
-		await page.goto("/register")
-		await page.getByRole("link", { name: /sign in/i }).click()
-		await expect(page).toHaveURL(/\/login/)
+		await expect(page.getByRole("link", { name: /sign up|register/i })).toHaveCount(0)
 	})
 })

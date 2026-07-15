@@ -46,6 +46,7 @@
 		"drizzle-orm": "catalog:",
 		"express": "^5.2.1",
 		"lru-cache": "^11.0.0",
+		"multer": "^2.0.2",
 		"nestjs-pino": "^4.6.1",
 		"nestjs-zod": "^5.1.1",
 		"pg": "catalog:",
@@ -65,6 +66,7 @@
 		"@swc/core": "^1.11.0",
 		"@types/express": "^5.0.6",
 		"@types/jest": "^30.0.0",
+		"@types/multer": "^2.0.0",
 		"@types/node": "catalog:",
 		"@types/pg": "catalog:",
 		"@types/supertest": "^6.0.3",
@@ -118,6 +120,7 @@
 		],
 		"testEnvironment": "node",
 		"moduleNameMapper": {
+			"^(\\.{1,2}/.*)\\.js$": "$1",
 			"^@repo/db/(.*)$": "<rootDir>/../../../packages/db/src/$1",
 			"^@repo/contracts$": "<rootDir>/../../../packages/contracts/src",
 			"^@/(.*)$": "<rootDir>/$1"

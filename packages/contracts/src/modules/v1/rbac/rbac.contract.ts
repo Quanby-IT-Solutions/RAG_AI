@@ -18,8 +18,9 @@ import {
 /**
  * RBAC administration contract.
  *
- * Reads require `users:read`, writes require `users:manage` (enforced by the
- * backend RbacGuard). Permissions are a fixed catalog; this surface assigns
+ * Role/permission surfaces require `users.roles.manage`; the user directory
+ * requires `users.accounts.manage` (enforced by the backend RbacGuard).
+ * Permissions are a fixed catalog; this surface assigns
  * existing catalog permissions to roles, it does not mint new permissions.
  */
 export const rbacContract = {

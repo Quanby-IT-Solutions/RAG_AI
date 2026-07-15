@@ -2,10 +2,14 @@
 # TURBOREPO DEVELOPMENT ENVIRONMENT
 # ==========================================================
 # This Docker Compose configuration sets up the full application stack
-# for local development with both web and backend services.
+# for local development: web, backend, rag (internal-only Python service),
+# postgres (pgvector), and redis — all on app-network.
+#
+# Startup order: postgres -> migrate (pnpm db:migrate, one-shot) -> backend + rag
 #
 # Single entrypoint (default): Nginx reverse proxy on http://localhost
 #   /api/* -> backend (NestJS),  /* -> web (Next.js)
+#   (rag has NO Nginx route — internal Docker network only)
 #
 # SWAPPING THE PROXY
 # ------------------
@@ -35,7 +39,7 @@ services:
   # in .env). Set COMPOSE_PROFILES= empty to disable and use external Nginx.
   nginx:
     image: nginx:alpine
-    container_name: turbo-template-nginx
+    container_name: rag-ai-nginx
     profiles: ["docker-proxy"]
     ports:
       - "80:80" # single published port (clean URLs, no :port)
@@ -60,7 +64,7 @@ services:
         - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
         - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
         - NEXT_PUBLIC_API_VERSION=${NEXT_PUBLIC_API_VERSION}
-    container_name: turbo-template-web
+    container_name: rag-ai-web
     # Bound to loopback so an external/host Nginx can reach it when the
     # bundled proxy is disabled. Not exposed to the LAN. The Docker Nginx
     # still reaches it by service name (web:3001) over the internal network.
@@ -90,31 +94,159 @@ services:
     restart: unless-stopped
 
   # ----------------------------------------------------------
+  # PostgreSQL (pgvector) — in-network database
+  # ----------------------------------------------------------
+  # pgvector/pgvector:pg16 ships the vector extension; the first migration
+  # runs CREATE EXTENSION IF NOT EXISTS vector.
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-ai-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${POSTGRES_DB:-ragai}
+    # Published on loopback for local tooling (drizzle studio, psql). The
+    # in-network services reach it by name (postgres:5432). Change
+    # POSTGRES_HOST_PORT if a host Postgres already occupies 5432.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ragai}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Redis — infra baseline (no functional consumer in R1)
+  # ----------------------------------------------------------
+  redis:
+    image: redis:alpine
+    container_name: rag-ai-redis
+    networks:
+      - app-network
+    # Published for local `pnpm dev` (native rag expects redis://localhost:6379).
+    # Change REDIS_HOST_PORT in the root .env if 6379 is taken on the host.
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Migrations (one-shot) — pnpm db:migrate equivalent
+  # ----------------------------------------------------------
+  # Applies the ordered Drizzle migration history (packages/db/src/migrations)
+  # and exits. backend + rag wait for it to complete successfully.
+  migrate:
+    build:
+      context: .
+      dockerfile: packages/db/Dockerfile
+    container_name: rag-ai-migrate
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-ragai}
+    networks:
+      - app-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ----------------------------------------------------------
+  # RAG Service (Python/FastAPI) — INTERNAL ONLY
+  # ----------------------------------------------------------
+  # No published ports and no Nginx route: only reachable on app-network
+  # (the backend calls http://rag:8000 with a signed service JWT).
+  rag:
+    build:
+      context: .
+      dockerfile: apps/rag/Dockerfile
+    container_name: rag-ai-rag
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-ragai}
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
+      # Tracing (LangSmith default; set TRACING_PROVIDER=langfuse to switch)
+      - TRACING_PROVIDER=${TRACING_PROVIDER:-langsmith}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-ragp}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      # Pinned embedding constants (D1)
+      - EMBEDDING_MODEL=text-embedding-3-large
+      - EMBEDDING_DIMENSIONS=1536
+    networks:
+      - app-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
   # Backend API (NestJS)
   # ----------------------------------------------------------
   backend:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
-    container_name: turbo-template-backend
+    container_name: rag-ai-backend
     # Bound to loopback so an external/host Nginx can reach it when the
     # bundled proxy is disabled. Not exposed to the LAN. The Docker Nginx
     # still reaches it by service name (backend:3000) over the internal network.
     ports:
       - "127.0.0.1:3000:3000"
-    # Lets the container reach a Postgres running on the host via
-    # host.docker.internal (set DATABASE_URL accordingly). Harmless if you
-    # instead run a Postgres service in compose.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       # Server Configuration
       - NODE_ENV=production
       - PORT=3000
+      # In-network Postgres (compose service) — overrides any host-oriented
+      # DATABASE_URL from apps/backend/.env so backend, rag, and the migrate
+      # step all target the same database.
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-ragai}
+      # Internal RAG service (Docker network only; no Nginx route)
+      - RAG_SERVICE_URL=http://rag:8000
+      - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
     env_file:
       - apps/backend/.env
     networks:
       - app-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -134,3 +266,6 @@ services:
 networks:
   app-network:
     driver: bridge
+
+volumes:
+  postgres-data:

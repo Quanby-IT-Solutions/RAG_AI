@@ -51,8 +51,12 @@ export class RbacService {
 
 		if (set.permissionNames.has(permission)) return true
 
-		const resource = permission.split(":")[0]
-		if (resource && set.permissionNames.has(`${resource}:*`)) return true
+		// Progressive dotted-prefix wildcards: a granted `corpus.*` or
+		// `corpus.documents.*` satisfies a required `corpus.documents.upload`.
+		const segments = permission.split(".")
+		for (let i = 1; i < segments.length; i++) {
+			if (set.permissionNames.has(`${segments.slice(0, i).join(".")}.*`)) return true
+		}
 
 		return false
 	}
@@ -87,7 +91,9 @@ export class RbacService {
 
 		return {
 			roles: Array.from(set.roleNames).sort(),
-			permissions: PERMISSION_NAMES.filter(permission => set.permissionNames.has(permission)),
+			// Effective catalog keys: expands wildcard grants (e.g. `corpus.*`) and
+			// the admin role short-circuit into concrete dotted keys.
+			permissions: PERMISSION_NAMES.filter(permission => this.matchPermission(set, permission)),
 		}
 	}
 

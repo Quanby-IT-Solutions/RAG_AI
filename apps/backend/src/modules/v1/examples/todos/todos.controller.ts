@@ -4,7 +4,6 @@ import { implement } from "@orpc/server"
 import { AllowAnonymous, Session, type UserSession } from "@thallesp/nestjs-better-auth"
 
 import { v1 } from "@/config/api-versions.config"
-import { RequirePermissions } from "@/shared/decorators/require-permissions.decorator"
 import { StrictThrottle } from "@/shared/decorators/strict-throttle.decorator"
 import { IdempotencyInterceptor } from "@/shared/interceptors/idempotency.interceptor"
 
@@ -30,8 +29,9 @@ export class TodosController {
 		})
 	}
 
+	// F3 removed the legacy `posts:*` colon keys from the catalog; this example
+	// module is auth-only (no permission gate) until it is retired.
 	@StrictThrottle()
-	@RequirePermissions("posts:create")
 	@UseInterceptors(IdempotencyInterceptor)
 	@Implement(v1.example.todo.create)
 	async createTodo(
@@ -44,7 +44,6 @@ export class TodosController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("posts:edit")
 	@UseInterceptors(IdempotencyInterceptor)
 	@Implement(v1.example.todo.update)
 	async updateTodo() {
@@ -54,7 +53,6 @@ export class TodosController {
 	}
 
 	@StrictThrottle()
-	@RequirePermissions("posts:delete")
 	@UseInterceptors(IdempotencyInterceptor)
 	@Implement(v1.example.todo.delete)
 	async removeTodo() {

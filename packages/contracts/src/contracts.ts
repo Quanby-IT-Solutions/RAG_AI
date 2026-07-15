@@ -48,6 +48,34 @@ export type {
 	RemoveRoleRequest,
 } from "./modules/v1/rbac/rbac.schema.js"
 
+// Corpus (ingestion) contract + schemas
+export { corpusContract } from "./modules/v1/corpus/corpus.contract.js"
+export {
+	DocumentSchema,
+	DocumentStatusSchema,
+	DocumentMetadataSchema,
+} from "./modules/v1/corpus/corpus.schema.js"
+export type {
+	CorpusDocument,
+	DocumentStatus,
+	CorpusDocumentMetadata,
+} from "./modules/v1/corpus/corpus.schema.js"
+
+// Chat (generation) contract + schemas
+export { chatContract } from "./modules/v1/chat/chat.contract.js"
+export {
+	ChatQueryInputSchema,
+	ChatAnswerSchema,
+	ChatCitationSchema,
+	ChatTokenUsageSchema,
+} from "./modules/v1/chat/chat.schema.js"
+export type {
+	ChatQueryInput,
+	ChatAnswer,
+	ChatCitation,
+	ChatTokenUsage,
+} from "./modules/v1/chat/chat.schema.js"
+
 // Current-user access schemas
 export { meContract } from "./modules/v1/me/me.contract.js"
 export { MePermissionsSchema } from "./modules/v1/me/me.schema.js"

@@ -8,12 +8,16 @@ A TypeScript-first monorepo template using **Turborepo** and **pnpm** for full-s
 | --------- | ----------------------------------- |
 | Frontend  | Next.js 16, Tailwind CSS, shadcn/ui |
 | Backend   | NestJS                              |
+| RAG       | Python FastAPI (uv) — internal-only |
 | Mobile    | Flutter                             |
-| Database  | Drizzle ORM + PostgreSQL            |
+| Database  | Drizzle ORM + PostgreSQL (pgvector) |
 | Auth      | Better Auth                         |
 | Contracts | Zod schemas + DTOs                  |
 
 ## Quick Start
+
+> Already set up? See **[docs/RUNNING.md](docs/RUNNING.md)** for the daily
+> run guide, Release 1 test checklist, and troubleshooting.
 
 ```bash
 # Install dependencies
@@ -24,9 +28,13 @@ cp apps/backend/.env.example apps/backend/.env
 cp apps/web/.env.example apps/web/.env
 cp packages/db/.env.example packages/db/.env
 cp apps/mobile/.env.example apps/mobile/.env
+cp apps/rag/.env.example apps/rag/.env
 
-# Push database schema
-pnpm db:push
+# Apply the ordered database migrations (replaces the old `pnpm db:push`)
+pnpm db:migrate
+
+# Seed roles/permissions and the bootstrap admin (System Administrator)
+pnpm db:seed
 
 # Build packages (required for first run)
 pnpm build
@@ -34,9 +42,21 @@ pnpm build
 # Generate AI agent rules (recommended - includes sub-agent-first workflow policy)
 pnpm dlx @intellectronica/ruler apply
 
-# Start development (web :3001, backend :3000 — separate ports)
+# Start development (web :3001, backend :3000, rag :8000 — separate ports)
 pnpm dev
 ```
+
+> The Python RAG service (`apps/rag`) needs [uv](https://docs.astral.sh/uv/)
+> installed — its workspace scripts (`dev`/`build`/`lint`/`test`) shell out to
+> `uv`/`uvicorn`/`ruff`/`pytest`.
+
+> **Database port:** migrations require the **pgvector** Postgres from
+> `docker-compose.yml` (service `postgres`). If host port 5432 is already
+> taken by another Postgres, set `POSTGRES_HOST_PORT` in the root `.env`
+> (e.g. `5434`) and update the port in the `DATABASE_URL` of
+> `packages/db/.env` and `apps/backend/.env` to match. A plain host Postgres
+> without the pgvector extension will fail the
+> `enable_pgvector_extension` migration.
 
 After `pnpm dev`:
 
@@ -45,6 +65,7 @@ After `pnpm dev`:
 | Web            | http://localhost:3001                |
 | Backend API    | http://localhost:3000/api/v1         |
 | API reference  | http://localhost:3000/api/v1/docs    |
+| RAG service    | http://localhost:8000/health         |
 
 ## Coverage thresholds are a floor
 
@@ -56,10 +77,10 @@ Serve **web and backend through one origin** (and, in production, one TLS
 cert) via the bundled Nginx reverse proxy — `/api/*` → backend, `/*` → web.
 
 ```bash
-# Copy the root env (single-origin build args for the web image)
+# Copy the root env (single-origin build args + postgres/redis/rag settings)
 cp .env.example .env
 
-# Build + start nginx + web + backend
+# Build + start nginx + web + backend + rag + postgres (pgvector) + redis
 docker compose up -d --build
 
 # New clone tip: start/restart only the Nginx proxy without dependencies
@@ -74,13 +95,19 @@ docker compose up -d --no-deps nginx
 
 Notes:
 
+- Startup order: `postgres` → `migrate` (one-shot `pnpm db:migrate`, applies
+  the ordered Drizzle migrations incl. `CREATE EXTENSION vector`) →
+  `backend` + `rag`.
+- The `rag` service is **internal-only**: no published port and no Nginx
+  route — the backend reaches it at `http://rag:8000` on `app-network`.
 - The bundled Nginx publishes port `80`. web/backend also bind to loopback
   (`127.0.0.1:3001` / `127.0.0.1:3000`) so an external proxy can reach them;
   they're not exposed to the LAN.
 - Same origin → no browser CORS. Proxy config lives in `nginx/nginx.conf`
   (volume-mounted — edit then `docker compose restart nginx`).
-- Set the backend's `DATABASE_URL` to `host.docker.internal:5432` to reach a
-  Postgres running on your host (the container's `localhost` is itself).
+- Postgres runs **in compose** (`pgvector/pgvector:pg16`) and is published on
+  `127.0.0.1:5432` for local tooling; backend/rag/migrate all use the
+  in-network `postgres` service via compose-injected `DATABASE_URL`.
 - `CORS_ORIGINS` / `BETTER_AUTH_TRUSTED_ORIGINS` must include the proxy origin
   (`http://localhost`).
 - Change the host port by editing the `nginx` service `ports` (e.g. `8080:80`),
@@ -109,6 +136,7 @@ changes are needed; if it splits web/api across different domains, update
 ├── apps/
 │   ├── web/           # Next.js frontend (port 3001)
 │   ├── backend/       # NestJS API (port 3000)
+│   ├── rag/           # Python FastAPI RAG service (port 8000, internal-only)
 │   └── mobile/        # Flutter app
 ├── packages/
 │   ├── auth/          # Shared auth config
@@ -133,8 +161,14 @@ changes are needed; if it splits web/api across different domains, update
 | `NEXT_PUBLIC_API_VERSION`     | ✅       | Web         | API version (default: v1)             |
 | `INTERNAL_API_BASE_URL`       | ❌       | Web         | SSR-only API URL (Docker net)         |
 | `COMPOSE_PROFILES`            | ❌       | Root/Docker | `docker-proxy` runs bundled Nginx; empty = external proxy |
+| `REDIS_URL`                   | ✅       | RAG         | Redis connection string               |
+| `OPENAI_API_KEY`              | ✅       | RAG         | OpenAI API key (embeddings + chat)    |
+| `RAG_SERVICE_TOKEN_SECRET`    | ✅       | Backend, RAG | Shared HS256 secret for the service JWT |
+| `RAG_SERVICE_URL`             | ✅       | Backend     | Internal RAG base URL (`http://rag:8000` in Docker) |
+| `LANGSMITH_API_KEY`           | ✅       | RAG         | Tracing key (or Langfuse keys with `TRACING_PROVIDER=langfuse`) |
+| `POSTGRES_USER/PASSWORD/DB`   | ❌       | Root/Docker | Compose postgres credentials (also build the injected `DATABASE_URL`) |
 
-Copy from `.env.example` in each app: `apps/backend/.env`, `apps/web/.env`, `packages/db/.env`.
+Copy from `.env.example` in each app: `apps/backend/.env`, `apps/web/.env`, `packages/db/.env`, `apps/rag/.env`.
 
 **Separate ports (native `pnpm dev`):** `NEXT_PUBLIC_APP_URL=http://localhost:3001`,
 `NEXT_PUBLIC_API_BASE_URL=http://localhost:3000/api`.
@@ -151,8 +185,14 @@ into the web image at build time).
 | `pnpm lint`       | Run ESLint                 |
 | `pnpm typecheck`  | Run TypeScript checks      |
 | `pnpm format:fix` | Format code with Prettier  |
-| `pnpm db:push`    | Push schema to database    |
+| `pnpm db:generate` | Generate a migration from schema changes |
+| `pnpm db:migrate` | Apply the ordered migration history |
 | `pnpm db:studio`  | Open Drizzle Studio        |
+
+> **Migrations, not push:** the repo no longer uses `drizzle-kit push` — it
+> ignores hand-written `migration.sql` files (e.g. `CREATE EXTENSION vector`).
+> All schema changes go through `pnpm db:generate` + `pnpm db:migrate`; see
+> `packages/db/README.md`.
 
 ## Backend: Production-like Local Run
 

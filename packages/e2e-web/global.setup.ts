@@ -2,9 +2,10 @@ import { expect, request, test as setup } from "@playwright/test"
 
 import { AUTH_FILE } from "./constants"
 
-const TEST_EMAIL = process.env.E2E_TEST_EMAIL ?? "test@gmail.com"
-const TEST_PASSWORD = process.env.E2E_TEST_PASSWORD ?? "Password123"
-const TEST_NAME = process.env.E2E_TEST_NAME ?? "E2E Test User"
+// Accounts are admin-provisioned (no public sign-up), so e2e authenticates as
+// the seeded bootstrap admin from packages/db/src/seed.ts by default.
+const TEST_EMAIL = process.env.E2E_TEST_EMAIL ?? "admin@turbo-template.local"
+const TEST_PASSWORD = process.env.E2E_TEST_PASSWORD ?? "password123"
 
 // Backend auth API — trailing slash is required for correct URL resolution with relative paths
 const AUTH_API = process.env.E2E_AUTH_API_URL ?? "http://localhost:3000/api/v1/auth/"
@@ -23,31 +24,21 @@ setup("authenticate", async ({ page }) => {
 		},
 	})
 
-	// 1. Try sign-in with the test credentials
-	let authRes = await api.post("sign-in/email", {
+	// Sign in with provisioned credentials. Self-registration is disabled, so
+	// there is no sign-up fallback: the account must already exist (run
+	// `pnpm db:seed` for the bootstrap admin, or provision one and set
+	// E2E_TEST_EMAIL / E2E_TEST_PASSWORD).
+	const authRes = await api.post("sign-in/email", {
 		data: { email: TEST_EMAIL, password: TEST_PASSWORD },
 	})
 
-	// 2. If sign-in failed (user doesn't exist yet), register the account first
 	if (!authRes.ok()) {
-		const signUpRes = await api.post("sign-up/email", {
-			data: { email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME },
-		})
-
-		if (!signUpRes.ok()) {
-			const body = await signUpRes.text()
-			throw new Error(`[e2e setup] Failed to create test account: ${signUpRes.status()} – ${body}`)
-		}
-
-		// Sign in after successful registration
-		authRes = await api.post("sign-in/email", {
-			data: { email: TEST_EMAIL, password: TEST_PASSWORD },
-		})
-
-		if (!authRes.ok()) {
-			const body = await authRes.text()
-			throw new Error(`[e2e setup] Failed to sign in after registration: ${authRes.status()} – ${body}`)
-		}
+		const body = await authRes.text()
+		throw new Error(
+			`[e2e setup] Failed to sign in as ${TEST_EMAIL}: ${authRes.status()} – ${body}\n` +
+				"Accounts are admin-provisioned; seed the database (pnpm db:seed) or set " +
+				"E2E_TEST_EMAIL / E2E_TEST_PASSWORD to an existing account."
+		)
 	}
 
 	// ── Transfer auth cookies from API context → browser context ───────────────

@@ -10,17 +10,22 @@ jest.mock("@orpc/nest", () => ({
 }))
 
 jest.mock("@repo/contracts", () => ({
-	ADMIN_ROLE: "Admin",
+	ADMIN_ROLE: "System Administrator",
 	PERMISSION_NAMES: [
-		"posts:read",
-		"posts:create",
-		"posts:edit",
-		"posts:delete",
-		"posts:*",
-		"users:read",
-		"users:manage",
+		"users.accounts.manage",
+		"users.roles.manage",
+		"audit.log.view",
+		"chat.query.submit",
+		"chat.history.read",
 	],
-	ROLE_NAMES: ["Admin", "Manager", "User"],
+	ROLE_NAMES: [
+		"System Administrator",
+		"Knowledge Manager",
+		"Quality Analyst",
+		"Developer/Integrator",
+		"End User",
+		"Auditor/Viewer",
+	],
 }))
 
 jest.mock("@/common/rbac/rbac.service", () => ({
@@ -64,13 +69,13 @@ describe("MeController", () => {
 
 	it("returns the current user's roles and permissions", async () => {
 		rbacService.getUserAccess.mockResolvedValue({
-			roles: ["User"],
-			permissions: ["posts:read"],
+			roles: ["End User"],
+			permissions: ["chat.query.submit", "chat.history.read"],
 		})
 
 		await expect(controller.getPermissions({ user: { id: "user-1" } } as never)).resolves.toEqual({
-			roles: ["User"],
-			permissions: ["posts:read"],
+			roles: ["End User"],
+			permissions: ["chat.query.submit", "chat.history.read"],
 		})
 		expect(rbacService.getUserAccess).toHaveBeenCalledWith("user-1")
 	})

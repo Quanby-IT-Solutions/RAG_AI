@@ -37,11 +37,10 @@
 		"lint": "eslint --flag unstable_native_nodejs_ts_config \"src/**/*.ts\" --fix",
 		"typecheck": "pnpm prebuild:contracts && tsc --noEmit",
 		"test:cov": "echo 'no tests yet (db package)' && exit 0",
-		"push": "pnpm build && drizzle-kit push",
 		"studio": "pnpm build && drizzle-kit studio",
 		"generate": "pnpm build && drizzle-kit generate",
 		"migrate": "pnpm build && drizzle-kit migrate",
-		"seed": "pnpm --filter @repo/contracts build && pnpm push && tsx src/seed.ts"
+		"seed": "pnpm --filter @repo/contracts build && pnpm migrate && tsx src/seed.ts"
 	},
 	"dependencies": {
 		"@repo/contracts": "workspace:*",

@@ -34,6 +34,16 @@ export const env = createEnv({
 		// Database
 		DATABASE_URL: z.string(),
 
+		// RAG service (Python, internal-only). The gateway forwards uploads to
+		// RAG_SERVICE_URL with a short-lived HS256 JWT signed with
+		// RAG_SERVICE_TOKEN_SECRET (must match the RAG service's secret).
+		RAG_SERVICE_URL: z.string().url().default("http://localhost:8000"),
+		RAG_SERVICE_TOKEN_SECRET: z.string().min(1).default("dev-rag-service-secret-change-in-production"),
+		// Hard-timeout (ms) for gateway -> RAG calls (AbortSignal.timeout contract).
+		RAG_SERVICE_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
+		// Service JWT lifetime (seconds) — short-lived by design.
+		RAG_SERVICE_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(120),
+
 		// Authentication
 		BETTER_AUTH_SECRET: z.string(),
 		BETTER_AUTH_TRUSTED_ORIGINS: z.string(),

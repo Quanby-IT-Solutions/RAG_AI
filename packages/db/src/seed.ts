@@ -159,9 +159,12 @@ async function seedDatabase() {
 	}))
 
 	const roleDescriptions: Record<RoleName, string> = {
-		Admin: "Super-administrator; full access via role-name short-circuit",
-		Manager: "Can manage posts and read users",
-		User: "Standard user with read access to posts",
+		"System Administrator": "Super-administrator; full access via role-name short-circuit",
+		"Knowledge Manager": "Curates the corpus: upload/read documents, run ingestion and re-embedding",
+		"Quality Analyst": "Maintains the golden set, runs evaluations, approves the regression gate",
+		"Developer/Integrator": "Provisions and revokes own API credentials",
+		"End User": "Asks questions via chat and reads own conversation history",
+		"Auditor/Viewer": "Read-only: audit trail, reports, and ops dashboards",
 	}
 
 	const seedRoles: Array<typeof roles.$inferInsert> = ROLE_NAMES.map(name => ({
@@ -172,13 +175,25 @@ async function seedDatabase() {
 	}))
 
 	const permissionDescriptions: Record<PermissionName, string> = {
-		"posts:read": "Read posts",
-		"posts:create": "Create posts",
-		"posts:edit": "Edit posts",
-		"posts:delete": "Delete posts",
-		"posts:*": "All actions on posts",
-		"users:read": "Read user profiles",
-		"users:manage": "Manage users",
+		"users.accounts.manage": "Create/disable users",
+		"users.roles.manage": "Define roles, assign permissions",
+		"audit.log.view": "Read audit trail",
+		"corpus.documents.upload": "Add sources to the corpus",
+		"corpus.documents.read": "View corpus sources",
+		"corpus.ingest.run": "Trigger ingestion/re-index jobs",
+		"corpus.chunks.inspect": "View chunk-boundary inspection",
+		"corpus.reembed.run": "Run shadow re-embedding cutover",
+		"chat.query.submit": "Ask questions via /chat",
+		"chat.history.read": "Read own conversation history",
+		"eval.golden.manage": "Maintain golden set",
+		"eval.runs.execute": "Run evaluations, view results",
+		"eval.gate.approve": "Accept a new baseline / override gate",
+		"apikeys.keys.manage": "Provision/revoke own API credentials",
+		"ops.dashboards.view": "Quality/ops dashboards",
+		"ops.config.view": "Read-only config review, secrets masked",
+		"reports.reports.view": "View reports",
+		"reports.reports.export": "Export reports",
+		"reports.schedules.manage": "Schedule report generation",
 	}
 
 	const seedPermissions: Array<typeof permissions.$inferInsert> = PERMISSION_NAMES.map(name => ({
@@ -188,17 +203,37 @@ async function seedDatabase() {
 		updatedAt: now,
 	}))
 
-	// Role -> permission names. Admin omitted: granted via role-name short-circuit.
+	// Role -> permission names (DOMAIN-MODEL §VI). System Administrator omitted:
+	// granted everything via the ADMIN_ROLE short-circuit in the RBAC guard.
 	const rolePermissionNames: Partial<Record<RoleName, PermissionName[]>> = {
-		Manager: ["posts:*", "users:read"],
-		User: ["posts:read"],
+		"Knowledge Manager": [
+			"corpus.documents.upload",
+			"corpus.documents.read",
+			"corpus.ingest.run",
+			"corpus.chunks.inspect",
+			"corpus.reembed.run",
+		],
+		"Quality Analyst": [
+			"eval.golden.manage",
+			"eval.runs.execute",
+			"eval.gate.approve",
+			"ops.dashboards.view",
+		],
+		"Developer/Integrator": ["apikeys.keys.manage"],
+		"End User": ["chat.query.submit", "chat.history.read"],
+		"Auditor/Viewer": [
+			"audit.log.view",
+			"reports.reports.view",
+			"reports.reports.export",
+			"ops.dashboards.view",
+		],
 	}
 
 	// User id -> role name.
 	const userRoleAssignments: Array<{ userId: string; roleName: RoleName }> = [
 		{ userId: "seed-user-admin", roleName: ADMIN_ROLE },
-		{ userId: "seed-user-alex", roleName: "User" },
-		{ userId: "seed-user-sam", roleName: "User" },
+		{ userId: "seed-user-alex", roleName: "End User" },
+		{ userId: "seed-user-sam", roleName: "End User" },
 	]
 
 	let rolePermissionCount = 0
@@ -235,6 +270,14 @@ async function seedDatabase() {
 						},
 					})
 			}
+
+			// F3 breaking replacement (single-tenant fresh build): drop the legacy
+			// colon-key catalog (`posts:*`, `users:read`, ...) and the old
+			// Admin/Manager/User roles entirely, then reseed the dotted-key catalog.
+			await tx.delete(rolePermissions)
+			await tx.delete(userRoles)
+			await tx.delete(permissions)
+			await tx.delete(roles)
 
 			for (const role of seedRoles) {
 				await tx

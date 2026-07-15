@@ -201,7 +201,7 @@ export default defineConfig({
 
 | Command | Purpose |
 |---------|---------|
-| `pnpm db:push` | Push schema changes directly (development) |
+| `pnpm db:migrate` | Apply the ordered migration history |
 | `pnpm db:generate` | Generate migration SQL files |
 | `pnpm db:migrate` | Run pending migrations |
 | `pnpm db:studio` | Open Drizzle Studio GUI |
@@ -211,7 +211,7 @@ export default defineConfig({
 1. Define table in `packages/db/src/schema.ts` using `createTable`
 2. Add relations in the `defineRelations()` call
 3. Add table to the `schema` object assignment
-4. Run `pnpm db:push` (development) or `pnpm db:generate` + `pnpm db:migrate` (production)
+4. Run `pnpm db:generate` + `pnpm db:migrate` (the repo does not use `db:push`)
 5. Create corresponding Zod schemas in `@repo/contracts`
 
 ## Better Auth Tables
