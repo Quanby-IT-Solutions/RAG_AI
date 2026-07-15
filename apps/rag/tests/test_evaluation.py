@@ -110,7 +110,7 @@ class FakeEvalRepository:
         last = self.finished[-1]
         return {
             "id": run_id,
-            "kind": "retrieval",
+            "kind": self.created[-1]["kind"],
             "status": last["status"],
             "gitSha": self.created[-1]["gitSha"],
             "config": self.created[-1]["config"],

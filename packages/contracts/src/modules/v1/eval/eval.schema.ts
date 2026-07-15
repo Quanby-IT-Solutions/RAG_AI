@@ -93,6 +93,10 @@ export const EvalRunItemSchema = z.object({
 	reciprocalRank: z.number().optional(),
 	precisionAtK: z.number().optional(),
 	recallAtK: z.number().optional(),
+	// EV-3 generation metrics (null = unscorable, never silently perfect).
+	answer: z.string().optional(),
+	faithfulness: z.number().nullable().optional(),
+	answerRelevancy: z.number().nullable().optional(),
 })
 
 export const EvalRunSchema = z.object({
@@ -118,6 +122,8 @@ export const ExecuteEvalRunRequestSchema = z.object({
 	keywordWeight: z.number().min(0).optional(),
 	/** RT-3 A/B: omit = configured default; true requires a configured reranker. */
 	rerank: z.boolean().optional(),
+	/** EV-3: also generate answers and score faithfulness/answer relevancy. */
+	generation: z.boolean().optional(),
 })
 
 /** Per-metric delta between two runs (candidate − base). */

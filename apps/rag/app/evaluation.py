@@ -20,6 +20,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.config import Settings
+from app.generation_eval import (
+    EvalSpend,
+    evaluate_faithfulness,
+    evaluate_relevancy,
+    generate_answer,
+)
+from app.generation_eval import SupportsComplete as EvalChatClient
 from app.retrieval import RetrievalService, get_retrieval_service
 from app.security import ServicePrincipal, verify_service_jwt
 from app.timeouts import with_hard_timeout
@@ -244,8 +251,15 @@ async def run_retrieval_eval(
     vector_weight: float | None = None,
     keyword_weight: float | None = None,
     rerank: bool | None = None,
+    generation: bool = False,
+    chat_client: EvalChatClient | None = None,
 ) -> dict[str, Any]:
-    """Execute one retrieval eval run and persist it. Returns the run row.
+    """Execute one eval run and persist it. Returns the run row.
+
+    generation=True (EV-3) additionally answers each item with the grounded
+    prompt (NEVER persisted — eval spend, not user spend) and scores
+    faithfulness + answer relevancy via the evaluator LLM; the aggregates
+    land in the SAME eval_runs row (kind becomes "generation").
 
     Raises EvalRunError (fail loud, AC) BEFORE creating a run when the golden
     set is empty; a fully-stale set is recorded as a FAILED run."""
@@ -260,6 +274,8 @@ async def run_retrieval_eval(
         raise EvalRunError(
             "rerank=true requested but RERANK_ENABLED is off — configure the reranker first"
         )
+    if generation and chat_client is None:
+        raise EvalRunError("generation=true requires a configured chat client")
 
     effective_k = k if k is not None else settings.retrieval_top_k
     # Exact snapshot of what this run evaluated (AC: parameterized toggles).
@@ -290,10 +306,13 @@ async def run_retrieval_eval(
         "compressionProvider": settings.compression_provider
         if settings.compression_enabled
         else None,
+        # EV-3: generation metrics on/off + the models involved.
+        "generation": generation,
+        "generationModel": chat_client.model if generation and chat_client else None,
     }
 
     run_id = await repository.create_run(
-        kind="retrieval",
+        kind="generation" if generation else "retrieval",
         git_sha=settings.git_sha,
         config=config,
         triggered_by=triggered_by,
@@ -301,6 +320,7 @@ async def run_retrieval_eval(
 
     per_item: list[dict[str, Any]] = []
     scores: list[dict[str, float]] = []
+    spend = EvalSpend()
     try:
         for item in items:
             if item["staleHashes"]:
@@ -323,16 +343,35 @@ async def run_retrieval_eval(
             )
             retrieved_hashes = [chunk["content_hash"] for chunk in retrieved]
             item_scores = score_item(item["expectedChunkHashes"], retrieved_hashes, effective_k)
+            entry: dict[str, Any] = {
+                "goldenItemId": item["id"],
+                "question": item["question"],
+                "skipped": False,
+                "retrievedHashes": retrieved_hashes,
+                **item_scores,
+            }
+            if generation and chat_client is not None:
+                # EV-3: grounded answer + evaluator scores. Nothing persists
+                # to conversations/messages — this is eval spend by design.
+                answer = await generate_answer(
+                    client=chat_client,
+                    question=item["question"],
+                    chunks=retrieved,
+                    spend=spend,
+                )
+                contexts = [chunk["content"] for chunk in retrieved]
+                entry["answer"] = answer
+                entry["faithfulness"] = await evaluate_faithfulness(
+                    client=chat_client, answer=answer, contexts=contexts, spend=spend
+                )
+                entry["answerRelevancy"] = await evaluate_relevancy(
+                    client=chat_client,
+                    question=item["question"],
+                    answer=answer,
+                    spend=spend,
+                )
             scores.append(item_scores)
-            per_item.append(
-                {
-                    "goldenItemId": item["id"],
-                    "question": item["question"],
-                    "skipped": False,
-                    "retrievedHashes": retrieved_hashes,
-                    **item_scores,
-                }
-            )
+            per_item.append(entry)
 
         skipped = sum(1 for entry in per_item if entry["skipped"])
         if not scores:
@@ -351,6 +390,36 @@ async def run_retrieval_eval(
             "itemCount": float(len(scores)),
             "skippedStaleCount": float(skipped),
         }
+        if generation:
+            faithfulness_scores = [
+                entry["faithfulness"]
+                for entry in per_item
+                if not entry["skipped"] and entry.get("faithfulness") is not None
+            ]
+            relevancy_scores = [
+                entry["answerRelevancy"]
+                for entry in per_item
+                if not entry["skipped"] and entry.get("answerRelevancy") is not None
+            ]
+            if faithfulness_scores:
+                metrics["faithfulness"] = sum(faithfulness_scores) / len(faithfulness_scores)
+            if relevancy_scores:
+                metrics["answerRelevancy"] = sum(relevancy_scores) / len(relevancy_scores)
+            # Cost-tracked as EVAL spend (AC) — visible on the run record.
+            metrics["evalPromptTokens"] = float(spend.prompt_tokens)
+            metrics["evalCompletionTokens"] = float(spend.completion_tokens)
+            logger.info(
+                "eval.spend %s",
+                json.dumps(
+                    {
+                        "runId": run_id,
+                        "purpose": "eval",
+                        "calls": spend.calls,
+                        "promptTokens": spend.prompt_tokens,
+                        "completionTokens": spend.completion_tokens,
+                    }
+                ),
+            )
         await repository.finish_run(
             run_id, status="completed", metrics=metrics, per_item=per_item, error=None
         )
@@ -385,8 +454,19 @@ class RetrievalEvalRequest(BaseModel):
     vector_weight: float | None = Field(default=None, ge=0, alias="vectorWeight")
     keyword_weight: float | None = Field(default=None, ge=0, alias="keywordWeight")
     rerank: bool | None = Field(default=None)
+    # EV-3: also generate answers and score faithfulness/relevancy.
+    generation: bool = Field(default=False)
 
     model_config = {"populate_by_name": True}
+
+
+def get_eval_chat_client(request: Request) -> EvalChatClient:
+    """EV-3 seam: evaluator/generator LLM via the provider-client interface
+    (cheap-fast model; inherits its hard timeout, and the shared throttle
+    once CP-4 lands)."""
+    from app.providers import OpenAIChatClient
+
+    return OpenAIChatClient(request.app.state.settings)
 
 
 @router.post("/eval/retrieval")
@@ -396,6 +476,7 @@ async def execute_retrieval_eval(
     principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
     repository: Annotated[EvalRepository, Depends(get_eval_repository)],
+    chat_client: Annotated[EvalChatClient, Depends(get_eval_chat_client)],
 ) -> dict[str, Any]:
     try:
         return await run_retrieval_eval(
@@ -407,6 +488,8 @@ async def execute_retrieval_eval(
             vector_weight=payload.vector_weight,
             keyword_weight=payload.keyword_weight,
             rerank=payload.rerank,
+            generation=payload.generation,
+            chat_client=chat_client if payload.generation else None,
         )
     except EvalRunError as exc:
         # Fail loud (AC): empty/fully-stale golden set is a client-visible 409.

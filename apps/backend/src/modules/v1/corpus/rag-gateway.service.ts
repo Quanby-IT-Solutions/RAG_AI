@@ -233,6 +233,7 @@ export class RagGatewayService {
 		vectorWeight?: number
 		keywordWeight?: number
 		rerank?: boolean
+		generation?: boolean
 		userId: string
 		permissions: readonly string[]
 		requestId: string
@@ -256,6 +257,7 @@ export class RagGatewayService {
 				...(input.vectorWeight !== undefined && { vectorWeight: input.vectorWeight }),
 				...(input.keywordWeight !== undefined && { keywordWeight: input.keywordWeight }),
 				...(input.rerank !== undefined && { rerank: input.rerank }),
+				...(input.generation !== undefined && { generation: input.generation }),
 			}),
 			failureMessage: "RAG eval run failed",
 		})

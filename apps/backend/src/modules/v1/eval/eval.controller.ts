@@ -122,6 +122,7 @@ export class EvalController {
 					vectorWeight: input.vectorWeight,
 					keywordWeight: input.keywordWeight,
 					rerank: input.rerank,
+					generation: input.generation,
 					userId: session.user.id,
 					permissions: access.permissions,
 					requestId: correlationId,

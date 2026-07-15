@@ -14,6 +14,7 @@ from app.chunks import ChunksRepository
 from app.config import get_settings
 from app.embeddings import EmbeddingsClient
 from app.evaluation import EvalRepository, EvalRunError, run_retrieval_eval
+from app.providers import OpenAIChatClient
 from app.retrieval import RetrievalService
 
 
@@ -27,6 +28,11 @@ async def _main() -> int:
         choices=["on", "off"],
         default=None,
         help="override the configured rerank stage (RT-3 A/B)",
+    )
+    parser.add_argument(
+        "--generation",
+        action="store_true",
+        help="also score faithfulness + answer relevancy (EV-3)",
     )
     args = parser.parse_args()
 
@@ -46,6 +52,8 @@ async def _main() -> int:
             vector_weight=args.vector_weight,
             keyword_weight=args.keyword_weight,
             rerank=None if args.rerank is None else args.rerank == "on",
+            generation=args.generation,
+            chat_client=OpenAIChatClient(settings) if args.generation else None,
         )
     except EvalRunError as exc:
         print(f"eval run refused: {exc}", file=sys.stderr)

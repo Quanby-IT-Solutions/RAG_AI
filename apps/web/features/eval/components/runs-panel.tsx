@@ -56,6 +56,7 @@ export function RunsPanel() {
 
 	const [kText, setKText] = useState("")
 	const [rerankMode, setRerankMode] = useState<"default" | "on" | "off">("default")
+	const [withGeneration, setWithGeneration] = useState(false)
 	const [baseId, setBaseId] = useState<string | null>(null)
 	const [candidateId, setCandidateId] = useState<string | null>(null)
 	const comparison = useEvalRunComparisonQuery(baseId, candidateId)
@@ -66,6 +67,8 @@ export function RunsPanel() {
 			...(Number.isNaN(k) ? {} : { k }),
 			// RT-3 A/B: "default" omits the flag (configured behavior).
 			...(rerankMode === "default" ? {} : { rerank: rerankMode === "on" }),
+			// EV-3: also score faithfulness + answer relevancy.
+			...(withGeneration && { generation: true }),
 		})
 	}
 
@@ -118,6 +121,14 @@ export function RunsPanel() {
 							<option value="off">off</option>
 						</select>
 					</div>
+					<label className="flex h-9 items-center gap-1.5 text-sm">
+						<input
+							type="checkbox"
+							checked={withGeneration}
+							onChange={event => setWithGeneration(event.target.checked)}
+						/>
+						generation metrics
+					</label>
 					<Button type="button" onClick={handleExecute} disabled={executeRun.isPending}>
 						{executeRun.isPending ? "Running…" : "Run evaluation"}
 					</Button>
@@ -153,6 +164,8 @@ export function RunsPanel() {
 									<TableHead>MRR</TableHead>
 									<TableHead>P@k</TableHead>
 									<TableHead>R@k</TableHead>
+									<TableHead>Faithful</TableHead>
+									<TableHead>Relevancy</TableHead>
 									<TableHead>Items</TableHead>
 									<TableHead>Stale</TableHead>
 									<TableHead>When</TableHead>
@@ -188,6 +201,12 @@ export function RunsPanel() {
 													{formatMetric(run.metrics?.[metric])}
 												</TableCell>
 											))}
+											<TableCell className="font-mono text-xs">
+												{formatMetric(run.metrics?.["faithfulness"])}
+											</TableCell>
+											<TableCell className="font-mono text-xs">
+												{formatMetric(run.metrics?.["answerRelevancy"])}
+											</TableCell>
 											<TableCell>{formatMetric(run.metrics?.["itemCount"])}</TableCell>
 											<TableCell>
 												{formatMetric(run.metrics?.["skippedStaleCount"])}
