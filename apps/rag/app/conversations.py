@@ -25,9 +25,9 @@ RETURNING id
 
 _INSERT_MESSAGE_SQL = """
 INSERT INTO messages
-    (conversation_id, role, content, citations, retrieved_chunks,
+    (conversation_id, role, content, citations, retrieved_chunks, used_chunks,
      token_usage, trace_id, model_used, turn_index)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING id
 """
 
@@ -74,6 +74,7 @@ class ConversationsRepository:
         answer: str,
         citations: list[dict[str, Any]],
         retrieved_chunks: list[dict[str, Any]],
+        used_chunks: list[dict[str, Any]] | None,
         token_usage: dict[str, Any] | None,
         trace_id: str,
         model_used: str,
@@ -98,6 +99,7 @@ class ConversationsRepository:
                         None,
                         None,
                         None,
+                        None,
                         trace_id,
                         None,
                         0,
@@ -113,6 +115,7 @@ class ConversationsRepository:
                         answer,
                         json.dumps(citations),
                         json.dumps(retrieved_chunks),
+                        json.dumps(used_chunks) if used_chunks is not None else None,
                         json.dumps(token_usage) if token_usage is not None else None,
                         trace_id,
                         model_used,

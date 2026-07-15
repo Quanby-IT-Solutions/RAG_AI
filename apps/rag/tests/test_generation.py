@@ -7,6 +7,7 @@ one audit entry per query, and service-JWT enforcement on /internal/chat.
 No real OpenAI, no real DB."""
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -452,3 +453,88 @@ async def test_chat_endpoint_returns_the_generation_payload(chat_app):
 async def test_chat_endpoint_validates_the_query(chat_app):
     response = await post_chat(chat_app, token=make_token(), json={"query": ""})
     assert response.status_code == 422
+
+
+# ------------------------------------------------ token budget (GN-2, Flow B5)
+async def test_budget_selects_rank_order_and_logs_used_separately(
+    settings, caplog, monkeypatch
+):
+    import app.budget as budget_module
+
+    monkeypatch.setattr(budget_module, "count_tokens", lambda text: len(text))
+    big = make_chunk("x" * 60)
+    fits = make_chunk("y" * 30)
+    overflow = make_chunk("z" * 30)
+    service, _, client, repository = make_service(settings, chunks=[big, fits, overflow])
+    monkeypatch.setenv("CONTEXT_TOKEN_BUDGET", "95")
+
+    with caplog.at_level(logging.INFO, logger="app.generation"):
+        result = await service.answer(query="q", k=None, principal=PRINCIPAL)
+
+    # Rank-then-select: 60 + 30 fit, third (30) would exceed 95 -> stopped.
+    used_log = [r for r in caplog.records if "generation.used_chunks" in r.getMessage()]
+    assert len(used_log) == 1
+    payload = json.loads(used_log[0].getMessage().split(" ", 1)[1])
+    assert payload["stage"] == "used"
+    assert payload["budget"] == 95
+    assert payload["usedCount"] == 2
+    assert payload["retrievedCount"] == 3
+    assert [c["id"] for c in payload["chunks"]] == [big["id"], fits["id"]]
+
+    # The prompt context carries ONLY the used chunks (whole, untruncated).
+    context = client.calls[0][1]["content"]
+    assert "x" * 60 in context and "y" * 30 in context
+    assert "z" * 30 not in context
+
+    # The message record stores used separately from retrieved.
+    turn = repository.turns[0]
+    assert [c["id"] for c in turn["retrieved_chunks"]] == [
+        big["id"],
+        fits["id"],
+        overflow["id"],
+    ]
+    assert [c["id"] for c in turn["used_chunks"]] == [big["id"], fits["id"]]
+    assert all("contextTokens" in c for c in turn["used_chunks"])
+    # Prompt/completion usage still recorded on the message row.
+    assert turn["token_usage"] == {
+        "promptTokens": 100,
+        "completionTokens": 20,
+        "totalTokens": 120,
+    }
+    # Audit reflects the used/retrieved split.
+    assert repository.audits[0]["after"]["usedChunkCount"] == 2
+    assert repository.audits[0]["after"]["retrievedChunkCount"] == 3
+    assert result["isIDontKnow"] is False
+
+
+async def test_budget_change_applies_on_next_request_without_restart(settings, monkeypatch):
+    import app.budget as budget_module
+
+    monkeypatch.setattr(budget_module, "count_tokens", lambda text: len(text))
+    chunks = [make_chunk("a" * 50), make_chunk("b" * 50)]
+    service, _, client, _ = make_service(settings, chunks=chunks)
+
+    monkeypatch.setenv("CONTEXT_TOKEN_BUDGET", "120")
+    await service.answer(query="q", k=None, principal=PRINCIPAL)
+    assert "b" * 50 in client.calls[0][1]["content"]  # both fit
+
+    monkeypatch.setenv("CONTEXT_TOKEN_BUDGET", "60")  # no restart, same service
+    await service.answer(query="q", k=None, principal=PRINCIPAL)
+    assert "b" * 50 not in client.calls[1][1]["content"]  # only the first fits now
+
+
+async def test_nothing_fits_budget_answers_i_dont_know_without_model_call(
+    settings, monkeypatch
+):
+    import app.budget as budget_module
+
+    monkeypatch.setattr(budget_module, "count_tokens", lambda text: len(text))
+    monkeypatch.setenv("CONTEXT_TOKEN_BUDGET", "10")
+    service, _, client, repository = make_service(settings, chunks=[make_chunk("x" * 500)])
+
+    result = await service.answer(query="q", k=None, principal=PRINCIPAL)
+
+    assert result["isIDontKnow"] is True
+    assert result["citations"] == []
+    assert client.calls == []  # never exceeds the budget, never calls the model
+    assert repository.turns[0]["used_chunks"] == []

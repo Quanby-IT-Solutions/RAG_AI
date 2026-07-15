@@ -1,0 +1,1 @@
+ALTER TABLE "messages" ADD COLUMN "used_chunks" jsonb;

@@ -391,6 +391,10 @@ export const messages = createTable(
 		content: t.text("content").notNull(),
 		citations: t.jsonb("citations").$type<unknown>(),
 		retrievedChunks: t.jsonb("retrieved_chunks").$type<unknown>(),
+		// GN-2: the chunks actually USED in the prompt (rank-then-select under
+		// the hard token budget) — recorded separately from retrievedChunks so
+		// retrieval failures are diagnosable independent of generation.
+		usedChunks: t.jsonb("used_chunks").$type<unknown>(),
 		tokenUsage: t.jsonb("token_usage").$type<unknown>(),
 		traceId: t.text("trace_id"),
 		modelUsed: t.text("model_used"),

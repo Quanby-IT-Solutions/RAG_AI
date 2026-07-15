@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # --- Generation (GN-1) — single provider (OpenAI), non-streamed. Cheap-fast
     # default; model routing / second provider arrive with GN-4/GN-5.
     generation_model: str = Field(alias="GENERATION_MODEL", default="gpt-4o-mini", min_length=1)
+    # GN-2: hard per-request context token budget (rank-then-select cap).
+    # Read per request (env override wins) so changes apply without restart.
+    context_token_budget: int = Field(alias="CONTEXT_TOKEN_BUDGET", default=2000, ge=1)
 
     # --- Chunking (IN-4) — semantic primary, recursive fallback. Fixed-size
     # chunking is intentionally NOT selectable (ticket AC): the Literal only

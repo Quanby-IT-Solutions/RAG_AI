@@ -21,6 +21,7 @@ dependencies = [
     "docx2txt>=0.9",
     "beautifulsoup4>=4.15.0",
     "arq>=0.28.0",
+    "tiktoken>=0.13.0",
 ]
 
 [dependency-groups]

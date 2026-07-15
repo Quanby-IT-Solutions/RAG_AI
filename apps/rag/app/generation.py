@@ -17,6 +17,7 @@ NEW conversation (single-turn R1) with the user/assistant message pair and
 writes ONE RAG-action audit entry attributed to the service-JWT principal.
 """
 
+import json
 import logging
 import re
 import time
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
+from app.budget import current_context_budget, select_within_budget
 from app.config import Settings
 from app.conversations import ConversationsRepository
 from app.retrieval import RetrievalService, get_retrieval_service
@@ -192,7 +194,7 @@ class GenerationService:
         started = time.perf_counter()
         trace_id = principal.trace_id or str(uuid.uuid4())
 
-        # Flow B steps 3-4 (RT-1): embed the query, HNSW top-k, retrieved log.
+        # Flow B steps 3-4 (RT-1/RT-2): hybrid retrieve, retrieved log.
         chunks = await self._retrieval.retrieve(query, k=k)
         retrieved_record = [
             {
@@ -203,16 +205,39 @@ class GenerationService:
             for chunk in chunks
         ]
 
+        # Flow B step 5 (GN-2): hard token budget — rank-then-select, whole
+        # chunks only, never over budget. The order (rank -> select) is
+        # contractual per §5.3. Budget is resolved per request so a config
+        # change applies without restart.
+        budget = current_context_budget(self._settings)
+        used_chunks, selection = select_within_budget(chunks, budget=budget)
+        used_record = [
+            {
+                "id": chunk["id"],
+                "documentId": chunk["document_id"],
+                "similarity": chunk["similarity"],
+                "contextTokens": chunk["context_tokens"],
+            }
+            for chunk in used_chunks
+        ]
+        # The USED record is logged separately from the RETRIEVED record —
+        # this split is what makes retrieval failures diagnosable
+        # independent of generation (PRD constraint).
+        logger.info(
+            "generation.used_chunks %s",
+            json.dumps({"stage": "used", **selection, "chunks": used_record}),
+        )
+
         token_usage: dict[str, int] | None = None
         degraded = False
-        if not chunks:
-            # Alternate B1: nothing retrieved -> grounded refusal, model not
-            # called, NO invented citations.
+        if not used_chunks:
+            # Alternate B1: nothing retrieved (or nothing fits the budget) ->
+            # grounded refusal, model not called, NO invented citations.
             answer_text = I_DONT_KNOW_ANSWER
             citations: list[dict[str, Any]] = []
         else:
             prompt = build_grounded_prompt().format_messages(
-                context=_format_context(chunks), question=query
+                context=_format_context(used_chunks), question=query
             )
             messages = [
                 {"role": "system" if m.type == "system" else "user", "content": m.content}
@@ -236,7 +261,8 @@ class GenerationService:
                 # Grounded "I don't know" / degraded answers carry NO citations.
                 citations = []
             else:
-                citations = await self._build_citations(answer_text, chunks)
+                # Citations resolve against the USED context blocks.
+                citations = await self._build_citations(answer_text, used_chunks)
 
         # Flow B step 7: persist the turn (NEW conversation per request, R1
         # single-turn) — user + assistant rows written atomically.
@@ -246,6 +272,7 @@ class GenerationService:
             answer=answer_text,
             citations=citations,
             retrieved_chunks=retrieved_record,
+            used_chunks=used_record,
             token_usage=token_usage,
             trace_id=trace_id,
             model_used=self._chat_client.model,
@@ -266,6 +293,8 @@ class GenerationService:
                 "messageId": message_id,
                 "model": self._chat_client.model,
                 "retrievedChunkCount": len(chunks),
+                "usedChunkCount": len(used_chunks),
+                "contextTokens": selection["contextTokens"],
                 "citationCount": len(citations),
                 "isIDontKnow": is_i_dont_know,
                 "degraded": degraded,
