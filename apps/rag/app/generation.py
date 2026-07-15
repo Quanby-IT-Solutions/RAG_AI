@@ -545,6 +545,9 @@ class GenerationService:
                         self._settings, model=client.model, token_usage=token_usage
                     )
                     record(tokenUsage=token_usage, costUsd=cost_usd)
+                    from app.metrics import observe_tokens
+
+                    observe_tokens(token_usage)
             except Exception as exc:
                 # Alternate B2: provider error/timeout -> bounded degradation,
                 # no silent failure; the trace records the failure path.
@@ -744,6 +747,9 @@ class GenerationService:
                                 "chat.stream_ttft %s",
                                 json.dumps({"ttftMs": ttft_ms, "model": client.model}),
                             )
+                            from app.metrics import CHAT_TTFT
+
+                            CHAT_TTFT.observe(ttft_ms / 1000.0)
                         parts.append(item)
                         yield _sse("token", {"delta": item})
                 answer_text = "".join(parts).strip()

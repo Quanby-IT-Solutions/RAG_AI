@@ -24,6 +24,7 @@ dependencies = [
     "tiktoken>=0.13.0",
     "anthropic>=0.116.0",
     "slowapi>=0.1.10",
+    "prometheus-client>=0.25.0",
 ]
 
 [dependency-groups]

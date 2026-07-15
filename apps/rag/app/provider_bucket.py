@@ -54,6 +54,15 @@ class ProviderBucket:
 
     async def _incr_metric(self, metric: str, provider: str) -> None:
         try:
+            from app.metrics import BUCKET_EVENTS, PROVIDER_429
+
+            if metric == "429":
+                PROVIDER_429.labels(provider=provider).inc()
+            else:
+                BUCKET_EVENTS.labels(provider=provider, event=metric).inc()
+        except Exception:
+            pass
+        try:
             await self._redis.incr(f"bucket:metrics:{metric}:{provider}")
         except Exception:
             logger.warning("bucket.metric_incr_failed", exc_info=True)

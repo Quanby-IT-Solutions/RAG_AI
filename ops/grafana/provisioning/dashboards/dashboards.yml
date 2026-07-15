@@ -1,0 +1,10 @@
+# OB-2: Grafana dashboard provider (loads JSON dashboards from this folder).
+apiVersion: 1
+providers:
+  - name: ragp
+    orgId: 1
+    folder: RAGP
+    type: file
+    disableDeletion: false
+    options:
+      path: /etc/grafana/provisioning/dashboards

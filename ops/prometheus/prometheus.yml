@@ -1,0 +1,11 @@
+# OB-2: Prometheus scrape config (dashboards-as-code lives in ops/grafana).
+# Per-replica /metrics endpoints aggregate here; add one target per replica.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: rag-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["rag:8000"]

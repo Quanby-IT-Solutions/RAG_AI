@@ -41,10 +41,12 @@ async def run_health_checks(settings: Settings) -> dict[str, str]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    # App-level INFO logs (retrieval traces, routing decisions, fallbacks)
-    # must reach stdout; uvicorn only configures its own loggers.
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO)
+    # OB-2: ALL app logs are structured JSON lines (aggregation-ready);
+    # uvicorn only configures its own loggers.
+    from app.metrics import MetricsMiddleware, configure_json_logging
+
+    configure_json_logging()
+    app_middleware = MetricsMiddleware
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -90,6 +92,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(generation.router)
     app.include_router(retrieval.router)
     app.include_router(evaluation.router)
+
+    # OB-2: request-id + latency + HTTP counters + JSON access log.
+    app.add_middleware(app_middleware)
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        """Prometheus scrape target — no auth/rate-limit (SC-2 exemption)."""
+        from app.metrics import render_latest
+
+        payload, content_type = render_latest()
+        return Response(content=payload, media_type=content_type)
 
     @app.get("/health")
     async def health(response: Response) -> dict:

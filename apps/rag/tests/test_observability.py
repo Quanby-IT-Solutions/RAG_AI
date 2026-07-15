@@ -84,3 +84,68 @@ async def test_answer_payload_and_audit_carry_cost(settings):
     assert repository.audits[-1]["after"]["costUsd"] == payload["costUsd"]
     # trace-id propagation to the persisted message (OB-1 in-scope).
     assert repository.turns[-1]["trace_id"] == payload["traceId"]
+
+
+# ------------------------------------------------------------- OB-2 metrics
+async def test_metrics_endpoint_exposes_prometheus_families(settings):
+    import httpx
+
+    from app.main import create_app
+
+    app = create_app(settings())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        # Drive one request through the middleware, then scrape.
+        await client.get("/health")
+        response = await client.get("/metrics")
+
+    assert response.status_code == 200
+    body = response.text
+    for family in (
+        "rag_http_requests_total",
+        "rag_http_request_duration_seconds",
+        "rag_chat_ttft_seconds",
+        "rag_chat_tokens_total",
+        "rag_cache_lookups_total",
+        "rag_provider_429_total",
+        "rag_errors_total",
+    ):
+        assert family in body
+    # The /health request itself was counted.
+    assert 'route="/health"' in body
+
+
+async def test_metrics_endpoint_needs_no_auth_or_rate_limit(settings):
+    import httpx
+
+    from app.main import create_app
+
+    app = create_app(settings(RATE_LIMIT_DEFAULT="1/minute"))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://rag") as client:
+        for _ in range(5):
+            response = await client.get("/metrics")
+            assert response.status_code == 200  # never 401/429
+
+
+def test_json_log_formatter_emits_structured_lines():
+    import json as jsonlib
+    import logging
+
+    from app.metrics import JsonLogFormatter
+
+    record = logging.LogRecord(
+        name="app.access", level=logging.INFO, pathname=__file__, lineno=1,
+        msg="request", args=(), exc_info=None,
+    )
+    record.requestId = "req-1"
+    record.route = "POST /internal/chat"
+    record.status = 200
+    record.durationMs = 12.5
+
+    line = jsonlib.loads(JsonLogFormatter().format(record))
+    assert line["message"] == "request"
+    assert line["requestId"] == "req-1"
+    assert line["route"] == "POST /internal/chat"
+    assert line["status"] == 200
+    assert line["durationMs"] == 12.5

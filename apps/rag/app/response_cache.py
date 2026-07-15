@@ -137,6 +137,13 @@ class ResponseCache:
 
     async def _incr(self, metric: str) -> None:
         try:
+            from app.metrics import CACHE_LOOKUPS
+
+            if metric in ("hits", "semanticHits", "misses"):
+                CACHE_LOOKUPS.labels(result=metric).inc()
+        except Exception:
+            pass
+        try:
             client = await self._client()
             await with_hard_timeout(
                 client.incr(f"respcache:metrics:{metric}"),
