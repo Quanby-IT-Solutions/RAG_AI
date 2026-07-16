@@ -16,6 +16,9 @@ REQUIRED_ENV = {
     "PROVIDER_BUCKET_ENABLED": "false",
     # OB-3: unit tests never probe real provider endpoints.
     "PROVIDER_PROBE_ENABLED": "false",
+    # CE-0: unit tests run the baseline profile (all Phase 7 flags off);
+    # profile-specific tests construct their own Settings.
+    "RAG_PROFILE": "baseline",
 }
 
 

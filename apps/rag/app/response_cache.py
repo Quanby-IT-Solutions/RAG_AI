@@ -68,6 +68,12 @@ def config_fingerprint(settings: Settings) -> str:
         "compression": settings.compression_enabled,
         "budget": settings.context_token_budget,
         "embeddingModel": settings.embedding_model,
+        # CE-0: resolved profile FLAGS (not the profile name) — the same flag
+        # set reached via RAG_PROFILE or explicit env shares one namespace.
+        "contextualChunks": settings.contextual_chunks_enabled,
+        "ragMode": settings.rag_mode,
+        "graphRag": settings.graph_rag_enabled,
+        "multimodal": settings.multimodal_enabled,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 

@@ -55,8 +55,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # EMBEDDING_DIMENSIONS must match the chunks.embedding column —
         # a mismatch aborts boot before any request is served.
         await assert_embedding_dimensions(settings, DocumentsRepository(settings))
+        # CE-0: state the resolved profile + flags so a deployment's variant
+        # is readable straight from the boot log.
         logger.info(
-            "RAG service starting (embedding=%s dims=%s)",
+            "RAG service starting (profile=%s contextual=%s mode=%s graph=%s "
+            "multimodal=%s embedding=%s dims=%s)",
+            settings.rag_profile,
+            settings.contextual_chunks_enabled,
+            settings.rag_mode,
+            settings.graph_rag_enabled,
+            settings.multimodal_enabled,
             settings.embedding_model,
             settings.embedding_dimensions,
         )

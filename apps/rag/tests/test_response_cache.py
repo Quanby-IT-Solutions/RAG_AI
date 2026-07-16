@@ -161,6 +161,23 @@ async def test_config_change_is_a_clean_namespace(settings, monkeypatch):
     assert await cache_b.lookup(query="vacation days?", filters=None) is None
 
 
+async def test_profile_flag_flip_is_a_clean_namespace(settings, monkeypatch):
+    """CE-0: flipping a Phase 7 flag (via profile or explicit env) changes the
+    fingerprint; identical resolved flags share one namespace either way."""
+    baseline = settings()
+    via_profile = settings(RAG_PROFILE="contextual")
+    assert config_fingerprint(baseline) != config_fingerprint(via_profile)
+
+    redis = FakeRedis()
+    await make_cache(baseline, redis).store(
+        query="vacation days?", filters=None, payload=PAYLOAD
+    )
+    assert await make_cache(via_profile, redis).lookup(query="vacation days?", filters=None) is None
+
+    via_explicit_flag = settings(RAG_PROFILE="baseline", CONTEXTUAL_CHUNKS_ENABLED="true")
+    assert config_fingerprint(via_profile) == config_fingerprint(via_explicit_flag)
+
+
 async def test_replicas_share_entries_via_the_same_redis(settings):
     config = settings()
     redis = FakeRedis()

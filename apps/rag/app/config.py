@@ -16,6 +16,39 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PINNED_EMBEDDING_MODEL = "text-embedding-3-large"
 PINNED_EMBEDDING_DIMENSIONS = 1536
 
+# CE-0 — RAG_PROFILE presets. A profile only fills flags NOT set explicitly in
+# the environment (explicit flag always wins). `baseline` is the current
+# template exactly as-is; the resolution happens in `_expand_rag_profile`.
+RagProfile = Literal["baseline", "contextual", "agentic", "full"]
+RagMode = Literal["linear", "agentic"]
+
+PROFILE_EXPANSION: dict[str, dict[str, bool | str]] = {
+    "baseline": {
+        "contextual_chunks_enabled": False,
+        "rag_mode": "linear",
+        "graph_rag_enabled": False,
+        "multimodal_enabled": False,
+    },
+    "contextual": {
+        "contextual_chunks_enabled": True,
+        "rag_mode": "linear",
+        "graph_rag_enabled": False,
+        "multimodal_enabled": False,
+    },
+    "agentic": {
+        "contextual_chunks_enabled": True,
+        "rag_mode": "agentic",
+        "graph_rag_enabled": False,
+        "multimodal_enabled": False,
+    },
+    "full": {
+        "contextual_chunks_enabled": True,
+        "rag_mode": "agentic",
+        "graph_rag_enabled": True,
+        "multimodal_enabled": True,
+    },
+}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -244,12 +277,36 @@ class Settings(BaseSettings):
         alias="COMPRESSION_TIMEOUT_SECONDS", default=10.0, gt=0
     )
 
+    # --- Template profiles (CE-0) — one .env line picks the Phase 7 variant.
+    # The four flags are Optional so "unset" is distinguishable from an
+    # explicit value: unset flags are filled from PROFILE_EXPANSION, explicit
+    # values override the preset. After validation they are never None.
+    rag_profile: RagProfile = Field(alias="RAG_PROFILE", default="baseline")
+    contextual_chunks_enabled: bool | None = Field(
+        alias="CONTEXTUAL_CHUNKS_ENABLED", default=None
+    )
+    rag_mode: RagMode | None = Field(alias="RAG_MODE", default=None)
+    graph_rag_enabled: bool | None = Field(alias="GRAPH_RAG_ENABLED", default=None)
+    multimodal_enabled: bool | None = Field(alias="MULTIMODAL_ENABLED", default=None)
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)
     external_call_timeout_seconds: float = Field(
         alias="EXTERNAL_CALL_TIMEOUT_SECONDS", default=30.0, gt=0
     )
+
+    @model_validator(mode="after")
+    def _expand_rag_profile(self) -> Self:
+        """CE-0: fill unset feature flags from the RAG_PROFILE preset.
+
+        Resolution order: explicit env flag > profile expansion. After this
+        validator every flag is concrete (never None).
+        """
+        for field_name, preset in PROFILE_EXPANSION[self.rag_profile].items():
+            if getattr(self, field_name) is None:
+                setattr(self, field_name, preset)
+        return self
 
     @model_validator(mode="after")
     def _require_pinned_embedding_dimensions(self) -> Self:
