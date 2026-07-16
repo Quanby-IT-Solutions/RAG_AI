@@ -302,6 +302,21 @@ class Settings(BaseSettings):
     retrieval_graph_weight: float = Field(alias="RETRIEVAL_GRAPH_WEIGHT", default=0.25, ge=0)
     graph_traversal_depth: int = Field(alias="GRAPH_TRAVERSAL_DEPTH", default=2, ge=1, le=3)
 
+    # --- Multimodal ingestion (CE-7) — only consulted when MULTIMODAL_ENABLED.
+    # A PDF page is vision-worthy when its extractable text is below the char
+    # threshold AND it carries embedded graphics; capped pages per document
+    # keep the ~5x vision cost bounded.
+    multimodal_min_page_text_chars: int = Field(
+        alias="MULTIMODAL_MIN_PAGE_TEXT_CHARS", default=200, ge=0
+    )
+    multimodal_render_scale: float = Field(
+        alias="MULTIMODAL_RENDER_SCALE", default=2.0, gt=0, le=4
+    )
+    multimodal_max_pages: int = Field(alias="MULTIMODAL_MAX_PAGES", default=20, ge=1)
+    # CE-8: vision-capable model + images attached per request cap.
+    vision_model: str = Field(alias="VISION_MODEL", default="gpt-4o-mini", min_length=1)
+    vision_max_images: int = Field(alias="VISION_MAX_IMAGES", default=4, ge=1, le=10)
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)

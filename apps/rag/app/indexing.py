@@ -7,6 +7,7 @@ cleanup, document status flip. Any failure marks the document `failed` with
 the reason (Flow A failure branch — never left stuck in `processing`).
 """
 
+import logging
 from typing import Any
 
 from app.chunking import chunk_document
@@ -22,6 +23,8 @@ from app.embedding_cache import EmbeddingCacheRepository, embed_with_cache
 from app.embeddings import EmbeddingsClient
 from app.tracing import traced
 
+logger = logging.getLogger(__name__)
+
 
 @traced(name="rag.index")
 async def index_document_content(
@@ -36,6 +39,9 @@ async def index_document_content(
     context_client: Any = None,
     context_cache: Any = None,
     active_embedding: dict[str, Any] | None = None,
+    page_images_repository: Any = None,
+    caption_cache: Any = None,
+    vision_client: Any = None,
 ) -> dict[str, Any]:
     """Index one normalized document (text/pages live in its metadata jsonb).
 
@@ -118,12 +124,57 @@ async def index_document_content(
             for chunk, context in zip(chunk_list, contexts, strict=True)
         ]
 
+        # CE-7: caption chunks for the document's stored page images —
+        # vision-model captions (cache-first on the image hash), indexed as
+        # ordinary chunks carrying modality:"image" metadata. Fail-soft: a
+        # caption failure never fails the document.
+        caption_rows: list[dict[str, Any]] = []
+        multimodal_stats: dict[str, Any] | None = None
+        if settings.multimodal_enabled and document.get("id"):
+            try:
+                from app.multimodal import (
+                    CaptionCacheRepository,
+                    PageImagesRepository,
+                    build_vision_client,
+                    caption_chunk_rows,
+                    caption_images,
+                )
+
+                images_repo = page_images_repository or PageImagesRepository(settings)
+                images = await images_repo.list_for_document(document["id"])
+                if images:
+                    image_bytes = await images_repo.fetch_bytes(
+                        [entry["id"] for entry in images]
+                    )
+                    captions, caption_stats = await caption_images(
+                        images=images,
+                        image_bytes=image_bytes,
+                        client=vision_client or build_vision_client(settings),
+                        cache=caption_cache or CaptionCacheRepository(settings),
+                        settings=settings,
+                    )
+                    caption_rows = caption_chunk_rows(
+                        document=document, images=images, captions=captions
+                    )
+                    multimodal_stats = {
+                        **caption_stats,
+                        "pages": len(images),
+                        "captionChunks": len(caption_rows),
+                    }
+            except Exception:
+                logger.warning("multimodal.caption_step_failed", exc_info=True)
+                multimodal_stats = {"failed": True}
+
         vectors: list[list[float]] = []
         batches = 0
         cache_stats = {"cacheHits": 0, "cacheMisses": 0}
         # IN-6 Flow A cache branch: lookup-before-batch keyed on the (possibly
         # enriched) content hash — unchanged content never re-embeds.
-        items = identities + [(row["content_hash"], row["content"]) for row in parents]
+        items = (
+            identities
+            + [(row["content_hash"], row["content"]) for row in parents]
+            + [(row["content_hash"], row["content"]) for row in caption_rows]
+        )
         if items:
             cache = embedding_cache or EmbeddingCacheRepository(settings)
             vectors, embed_stats = await embed_with_cache(
@@ -158,6 +209,7 @@ async def index_document_content(
                 chunk_list, vectors[: len(chunk_list)], contexts, identities, strict=True
             )
         ]
+        parent_vectors = vectors[len(chunk_list) : len(chunk_list) + len(parents)]
         rows.extend(
             {
                 **parent,
@@ -166,7 +218,21 @@ async def index_document_content(
                 "embed_key": parent["content_hash"],
                 "index_text": parent["content"],
             }
-            for parent, vector in zip(parents, vectors[len(chunk_list) :], strict=True)
+            for parent, vector in zip(parents, parent_vectors, strict=True)
+        )
+        # CE-7: caption chunks embed and upsert like any chunk; their hash
+        # binds (document, page, image hash, caption) so unchanged captions
+        # are idempotent and removed captions clean up via stale-hash delete.
+        caption_vectors = vectors[len(chunk_list) + len(parents) :]
+        rows.extend(
+            {
+                **caption,
+                "embedding": vector,
+                "embedding_model": embeddings.model,
+                "embed_key": caption["content_hash"],
+                "index_text": caption["content"],
+            }
+            for caption, vector in zip(caption_rows, caption_vectors, strict=True)
         )
         # IN-8 dual-write: while a re-embed migration is active, new chunks
         # also get shadow embeddings (target model, IN-6 cache namespace).
@@ -227,6 +293,7 @@ async def index_document_content(
             "cacheMisses": 0,
             "chunking": None,
             "context": None,
+            "multimodal": None,
             "error": reason,
         }
 
@@ -252,5 +319,7 @@ async def index_document_content(
         # CE-1: None when enrichment is off — baseline job stats keep their
         # exact pre-CE-1 shape (byte-identical rule).
         "context": context_stats,
+        # CE-7: None when multimodal is off (same rule).
+        "multimodal": multimodal_stats,
         "error": None,
     }

@@ -20,6 +20,8 @@ reset to pending) and enqueues it again.
 
 import asyncio
 import hashlib
+import json
+import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol
 
@@ -32,6 +34,8 @@ from app.loaders import LoaderSpec, resolve_loader, supported_mime_types
 from app.rate_limit import rate_limit
 from app.security import ServicePrincipal, verify_service_jwt
 from app.tracing import traced
+
+logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
@@ -123,6 +127,7 @@ async def _ingest_document(
     repository: DocumentsRepository,
     jobs: JobsRepository,
     queue: JobQueue,
+    settings: Any = None,
 ) -> dict[str, Any]:
     content_hash = hashlib.sha256(raw).hexdigest()
     source_uri = f"upload://{filename}"
@@ -188,6 +193,32 @@ async def _ingest_document(
         existing = await repository.fetch_by_content_hash(content_hash)
         return _document_response(existing or {}, reused=True)
 
+    # CE-7: vision-worthy PDF pages render to stored images at upload time
+    # (the worker captions + indexes them). Fail-soft — a render failure
+    # never blocks the text pipeline. Identical re-uploads no-op above, so
+    # unchanged content never re-renders (Flow A economics).
+    if settings is not None and settings.multimodal_enabled and loader.doc_type == "pdf":
+        try:
+            from app.multimodal import PageImagesRepository, detect_vision_pages
+
+            pages = await asyncio.to_thread(
+                detect_vision_pages,
+                raw,
+                min_text_chars=settings.multimodal_min_page_text_chars,
+                render_scale=settings.multimodal_render_scale,
+                max_pages=settings.multimodal_max_pages,
+            )
+            stored = await PageImagesRepository(settings).store(
+                document_id=document["id"], pages=pages
+            )
+            if stored:
+                logger.info(
+                    "multimodal.pages_stored %s",
+                    json.dumps({"documentId": document["id"], "pages": stored}),
+                )
+        except Exception:
+            logger.warning("multimodal.page_extraction_failed", exc_info=True)
+
     # IN-7: upload accepted -> ingestion_jobs row (queued) + arq enqueue.
     # The API returns immediately with the job id; the worker process runs
     # Flow A steps 5-7 (chunk -> batch-embed -> index) off the request path.
@@ -207,6 +238,7 @@ async def _ingest_document(
 @router.post("/ingest", dependencies=[Depends(rate_limit("rate_limit_ingest"))])
 async def ingest_document(
     file: UploadFile,
+    request: Request,
     principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
     repository: Annotated[DocumentsRepository, Depends(get_documents_repository)],
     jobs: Annotated[JobsRepository, Depends(get_jobs_repository)],
@@ -241,6 +273,7 @@ async def ingest_document(
         repository=repository,
         jobs=jobs,
         queue=queue,
+        settings=request.app.state.settings,
     )
 
 

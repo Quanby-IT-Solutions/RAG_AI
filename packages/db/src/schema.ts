@@ -1,5 +1,5 @@
 import { defineRelations, sql } from "drizzle-orm"
-import { customType, index, primaryKey, type AnyPgColumn } from "drizzle-orm/pg-core"
+import { customType, index, primaryKey, unique, type AnyPgColumn } from "drizzle-orm/pg-core"
 
 import { createTable } from "./utils/table.js"
 
@@ -21,6 +21,11 @@ const vector1536Nullable = customType<{ data: number[] | null; driverData: strin
 })
 
 /** Full-text search vector — DB-maintained via GENERATED ALWAYS AS (§3). */
+/** CE-7: raw image bytes (page renders) — bytea survives restarts as data. */
+const bytea = customType<{ data: Buffer }>({
+	dataType: () => "bytea",
+})
+
 const tsvector = customType<{ data: string }>({
 	dataType: () => "tsvector",
 })
@@ -522,6 +527,48 @@ export const graphExtractionCache = createTable(
 	t => [primaryKey({ columns: [t.chunkHash, t.model, t.promptVersion] })]
 )
 
+/**
+ * Vision-worthy PDF page images (CE-7 multimodal). Rendered at upload time
+ * for pages whose meaning lives in charts/figures (low text density +
+ * embedded graphics); the vision answer path (CE-8) reads them back. Stored
+ * as bytea so they survive container restarts with zero volume plumbing;
+ * cascade with the document. Keyed on (document_id, page); content_hash is
+ * the image bytes' sha256 (caption-cache key + idempotent re-render check).
+ */
+export const pageImages = createTable(
+	"page_images",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		documentId: t
+			.uuid("document_id")
+			.notNull()
+			.references(() => documents.id, { onDelete: "cascade" }),
+		page: t.integer("page").notNull(),
+		contentHash: t.text("content_hash").notNull(),
+		mimeType: t.text("mime_type").notNull().default("image/png"),
+		image: bytea("image").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [unique("page_images_document_page_uq").on(t.documentId, t.page)]
+)
+
+/**
+ * Vision-caption cache (CE-7 — same economics as `context_cache`). Keyed on
+ * (image content_hash, model, prompt version): an unchanged page image is
+ * never re-captioned.
+ */
+export const captionCache = createTable(
+	"caption_cache",
+	t => ({
+		imageHash: t.text("image_hash").notNull(),
+		model: t.text("model").notNull(),
+		promptVersion: t.text("prompt_version").notNull(),
+		caption: t.text("caption").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [primaryKey({ columns: [t.imageHash, t.model, t.promptVersion] })]
+)
+
 // ============================================================================
 // GOLDEN EVALUATION SET (evaluation — EV-1)
 // ============================================================================
@@ -793,6 +840,8 @@ export const schema = Object.assign(
 		embeddingCache,
 		contextCache,
 		graphExtractionCache,
+		pageImages,
+		captionCache,
 		reembedMigrations,
 		reportSchedules,
 		reportFiles,

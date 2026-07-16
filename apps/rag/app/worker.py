@@ -99,6 +99,10 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             context_client=ctx.get("context_client"),
             context_cache=ctx.get("context_cache"),
             active_embedding=active_embedding,
+            # CE-7: vision captioning doubles (flag-gated defaults inside).
+            page_images_repository=ctx.get("page_images_repository"),
+            caption_cache=ctx.get("caption_cache"),
+            vision_client=ctx.get("vision_client"),
         )
         await jobs.set_document_outcome(
             job_id=job_id,
@@ -155,6 +159,19 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
                 for key in ("hits", "misses", "fallbacks"):
                     agg[key] += outcome["context"][key]
                 agg["costUsd"] = round(agg["costUsd"] + outcome["context"]["costUsd"], 8)
+            # CE-7: vision economics per job — absent on non-multimodal runs;
+            # the ~5x vision cost stays visible as its own line.
+            if outcome.get("multimodal"):
+                agg = stats.setdefault(
+                    "multimodal",
+                    {"pages": 0, "captionChunks": 0, "hits": 0, "misses": 0,
+                     "fallbacks": 0, "costUsd": 0.0},
+                )
+                for key in ("pages", "captionChunks", "hits", "misses", "fallbacks"):
+                    agg[key] += outcome["multimodal"].get(key, 0)
+                agg["costUsd"] = round(
+                    agg["costUsd"] + outcome["multimodal"].get("costUsd", 0.0), 8
+                )
         else:
             stats["failures"].append(
                 {"documentId": entry["document_id"], "error": outcome["error"]}
@@ -254,6 +271,15 @@ async def startup(ctx: dict[str, Any]) -> None:
         from app.context_enrichment import build_context_client
 
         ctx["context_client"] = build_context_client(settings)
+    if settings.multimodal_enabled:
+        # CE-7: one bucket-gated vision client per worker process.
+        from app.multimodal import build_vision_client
+        from app.provider_bucket import build_provider_bucket
+
+        bucket_for_vision = (
+            build_provider_bucket(settings) if settings.provider_bucket_enabled else None
+        )
+        ctx["vision_client"] = build_vision_client(settings, bucket=bucket_for_vision)
     logger.info("arq worker started (redis=%s)", settings.redis_url)
 
 
