@@ -89,6 +89,47 @@ function FilterField({
 	)
 }
 
+/** Dependency-free bar chart for reports carrying a chart hint (RP-2). */
+function ReportBarChart({
+	chart,
+	rows,
+}: {
+	chart: NonNullable<ReportDefinition["chart"]>
+	rows: Record<string, unknown>[]
+}) {
+	const totals = new Map<string, number>()
+	for (const row of rows) {
+		const x = String(row[chart.xKey] ?? "")
+		const y = Number(row[chart.yKey])
+		if (!x || Number.isNaN(y)) continue
+		totals.set(x, (totals.get(x) ?? 0) + y)
+	}
+	const points = [...totals.entries()].sort(([a], [b]) => a.localeCompare(b))
+	const max = Math.max(...points.map(([, y]) => y), 0)
+	if (points.length === 0 || max <= 0) return null
+	return (
+		<div className="flex flex-col gap-1" data-testid="report-chart">
+			<p className="text-muted-foreground text-xs">
+				{chart.yLabel} by {chart.xKey}
+			</p>
+			<div className="flex h-24 items-end gap-1">
+				{points.map(([x, y]) => (
+					<div
+						key={x}
+						className="bg-primary/70 min-w-3 flex-1 rounded-t-sm"
+						style={{ height: `${Math.max(4, (y / max) * 100)}%` }}
+						title={`${x}: ${y.toFixed(4)}`}
+					/>
+				))}
+			</div>
+			<div className="text-muted-foreground flex justify-between text-[10px]">
+				<span>{points[0]?.[0]}</span>
+				<span>{points.at(-1)?.[0]}</span>
+			</div>
+		</div>
+	)
+}
+
 /**
  * Reporting console (RP-1). Renders any registered report definition —
  * filters and columns come from the framework, so RP-2..5 reports appear
@@ -216,6 +257,10 @@ export function ReportsView() {
 							<p role="alert" className="text-destructive text-sm">
 								{error.message}
 							</p>
+						) : null}
+
+						{definition.chart && result ? (
+							<ReportBarChart chart={definition.chart} rows={result.rows} />
 						) : null}
 
 						<div className="overflow-x-auto">

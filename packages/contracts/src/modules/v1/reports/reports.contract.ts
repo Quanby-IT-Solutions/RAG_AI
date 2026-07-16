@@ -15,6 +15,10 @@ export const ReportDefinitionSchema = z.object({
 	description: z.string(),
 	filters: z.array(ReportFilterDefSchema),
 	columns: z.array(z.object({ key: z.string(), label: z.string() })),
+	/** Optional bar-chart hint rendered above the table (RP-2 charts). */
+	chart: z
+		.object({ xKey: z.string(), yKey: z.string(), yLabel: z.string() })
+		.optional(),
 })
 
 export const RunReportRequestSchema = z.object({

@@ -587,3 +587,34 @@ test.describe("reports console (RP-1)", () => {
 		expect(download.suggestedFilename()).toMatch(/^audit-trail-.*\.csv$/)
 	})
 })
+
+test.describe("usage & cost report (RP-2)", () => {
+	test("aggregates spend per day/model with chart, separable eval spend", async ({ page }) => {
+		await page.goto("/reports")
+		const view = page.getByTestId("reports-view")
+		await expect(view).toBeVisible({ timeout: 15_000 })
+
+		await view.getByRole("combobox").first().click()
+		await page.getByRole("option", { name: "Usage & Cost" }).click()
+		await expect(view.locator("[data-slot=card-title]")).toHaveText("Usage & Cost")
+
+		// Aggregated rows carry counts, tokens, cost, and routing share.
+		await expect(view.getByRole("columnheader", { name: "Routing tier" })).toBeVisible({
+			timeout: 15_000,
+		})
+		const firstRow = view.locator("table tbody tr").first()
+		await expect(firstRow).toBeVisible({ timeout: 15_000 })
+		await expect(firstRow.getByText(/%$/)).toBeVisible()
+
+		// The chart hint renders as bars.
+		await expect(page.getByTestId("report-chart")).toBeVisible()
+
+		// Eval-tagged spend is separable from user-facing spend.
+		const form = view.locator("form")
+		await form.getByRole("combobox").click()
+		await page.getByRole("option", { name: "eval" }).click()
+		await view.getByRole("button", { name: "Apply filters" }).click()
+		const spendCells = view.locator("table tbody tr td:nth-child(2)")
+		await expect(spendCells.first()).toHaveText("eval", { timeout: 15_000 })
+	})
+})
