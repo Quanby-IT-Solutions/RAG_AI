@@ -316,7 +316,14 @@ export const chunks = createTable("chunks", t => ({
 		.references(() => documents.id, { onDelete: "cascade" }),
 	content: t.text("content").notNull(),
 	embedding: vector1536("embedding").notNull(),
-	tsv: tsvector("tsv").generatedAlwaysAs(sql`to_tsvector('english', "content")`),
+	// CE-1 contextual retrieval: the FTS vector indexes the LLM-generated
+	// situating context TOGETHER with the raw chunk text (Flow G — both
+	// retrieval arms see the enriched text); `content` stays the raw
+	// citation/display surface. NULL context (baseline) yields a tsv
+	// identical to plain to_tsvector(content).
+	tsv: tsvector("tsv").generatedAlwaysAs(
+		sql`to_tsvector('english', coalesce("context_text" || ' ', '') || "content")`
+	),
 	// Page/section carried over from the document normalization payload.
 	metadata: t.jsonb("metadata").$type<unknown>(),
 	contentHash: t.text("content_hash").notNull().unique(),
@@ -334,6 +341,10 @@ export const chunks = createTable("chunks", t => ({
 	// migration window; abort NULLs it back.
 	embeddingShadow: vector1536Nullable("embedding_shadow"),
 	shadowEmbeddingModel: t.text("shadow_embedding_model"),
+	// CE-1 (Flow G): LLM-generated situating context, prepended to the chunk
+	// for BOTH retrieval indexes (embedding + tsv above). Nullable — baseline
+	// deployments and enrichment fallbacks leave it NULL.
+	contextText: t.text("context_text"),
 }))
 
 // ============================================================================
@@ -471,6 +482,24 @@ export const embeddingCache = createTable(
 		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 	}),
 	t => [primaryKey({ columns: [t.contentHash, t.model] })]
+)
+
+/**
+ * Chunk-context cache (CE-1, Flow G — mirrors `embedding_cache`). Keyed on
+ * (chunk content_hash, context model, prompt version): identical content is
+ * never re-described by the LLM, and a prompt/model change is a clean
+ * namespace by construction. Written/read by the Python RAG service.
+ */
+export const contextCache = createTable(
+	"context_cache",
+	t => ({
+		chunkHash: t.text("chunk_hash").notNull(),
+		model: t.text("model").notNull(),
+		promptVersion: t.text("prompt_version").notNull(),
+		context: t.text("context").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [primaryKey({ columns: [t.chunkHash, t.model, t.promptVersion] })]
 )
 
 // ============================================================================
@@ -737,6 +766,7 @@ export const schema = Object.assign(
 		evalRuns,
 		evalBaselines,
 		embeddingCache,
+		contextCache,
 		reembedMigrations,
 		reportSchedules,
 		reportFiles,

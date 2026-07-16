@@ -172,6 +172,39 @@ async def test_csv_sections_flow_into_chunks(settings, repository, jobs, embeddi
     assert "rows 51-100" in sections
 
 
+# ---------------------------------------------------------------- CE-1 stats
+async def test_context_enrichment_stats_aggregate_per_job(repository, jobs, embeddings):
+    from tests.test_context_enrichment import FakeContextCache, FakeContextClient
+
+    config = Settings(_env_file=None, CONTEXTUAL_CHUNKS_ENABLED="true", **REQUIRED_ENV)
+    document = seed_document(repository, text="Employee handbook. " * 200)
+    job = await jobs.create_job(
+        kind="ingest", triggered_by="user-1", document_ids=[document["id"]]
+    )
+    ctx = make_ctx(config, repository, jobs, embeddings)
+    ctx["context_client"] = FakeContextClient()
+    ctx["context_cache"] = FakeContextCache()
+
+    result = await process_ingestion_job(ctx, job["id"])
+
+    assert result["status"] == "completed"
+    stats = jobs.jobs[job["id"]]["stats"]
+    assert stats["context"]["misses"] == stats["chunks"] > 0
+    assert stats["context"]["fallbacks"] == 0
+    assert stats["context"]["costUsd"] > 0
+    for chunk in repository.chunks.values():
+        assert chunk["context_text"].startswith("Context for:")
+
+
+async def test_baseline_job_stats_have_no_context_key(settings, repository, jobs, embeddings):
+    document = seed_document(repository, text="Employee handbook. " * 200)
+
+    job_id, _ = await run_job(settings, repository, jobs, embeddings, [document["id"]])
+
+    # CE-1 byte-identical rule: flag off -> stats shape is exactly pre-CE-1.
+    assert "context" not in jobs.jobs[job_id]["stats"]
+
+
 # ------------------------------------------------------------- failure branch
 async def test_embed_failure_marks_document_and_job_failed(
     settings, repository, jobs, embeddings

@@ -11,6 +11,12 @@ from typing import Any
 
 from app.chunking import chunk_document
 from app.config import Settings
+from app.context_enrichment import (
+    ContextCacheRepository,
+    build_context_client,
+    enrich_chunks,
+    enriched_embed_key,
+)
 from app.documents import DocumentsRepository
 from app.embedding_cache import EmbeddingCacheRepository, embed_with_cache
 from app.embeddings import EmbeddingsClient
@@ -27,6 +33,8 @@ async def index_document_content(
     embedding_cache: "EmbeddingCacheRepository | None" = None,
     reembed_repository: Any = None,
     shadow_embeddings: Any = None,
+    context_client: Any = None,
+    context_cache: Any = None,
 ) -> dict[str, Any]:
     """Index one normalized document (text/pages live in its metadata jsonb).
 
@@ -78,14 +86,43 @@ async def index_document_content(
                 for chunk in members:
                     parent_hash_by_child[chunk.chunk_index] = parent_hash
 
+        # CE-1 (Flow G): situating context per child chunk, cache-first and
+        # fail-soft — a failed generation falls back to the raw chunk text.
+        # Parents (RT-6) stay raw: they are context-sized aggregates excluded
+        # from the search arms.
+        contexts: list[str | None] = [None] * len(chunk_list)
+        context_stats: dict[str, Any] | None = None
+        if settings.contextual_chunks_enabled and chunk_list:
+            contexts, context_stats = await enrich_chunks(
+                document_text=text,
+                chunks=chunk_list,
+                client=context_client or build_context_client(settings),
+                cache=context_cache or ContextCacheRepository(settings),
+                settings=settings,
+            )
+
+        def index_identity(chunk: Any, context: str | None) -> tuple[str, str]:
+            """(embedding-cache key, text to embed). Enriched text gets its own
+            content-addressed key; raw text keeps the original chunk hash so
+            baseline cache entries survive the flag untouched."""
+            if context is None:
+                return chunk.content_hash, chunk.content
+            return (
+                enriched_embed_key(chunk.content_hash, context),
+                f"{context}\n\n{chunk.content}",
+            )
+
+        identities = [
+            index_identity(chunk, context)
+            for chunk, context in zip(chunk_list, contexts, strict=True)
+        ]
+
         vectors: list[list[float]] = []
         batches = 0
         cache_stats = {"cacheHits": 0, "cacheMisses": 0}
-        # IN-6 Flow A cache branch: lookup-before-batch keyed on the chunk
-        # content hash — unchanged content never re-embeds.
-        items = [(chunk.content_hash, chunk.content) for chunk in chunk_list] + [
-            (row["content_hash"], row["content"]) for row in parents
-        ]
+        # IN-6 Flow A cache branch: lookup-before-batch keyed on the (possibly
+        # enriched) content hash — unchanged content never re-embeds.
+        items = identities + [(row["content_hash"], row["content"]) for row in parents]
         if items:
             cache = embedding_cache or EmbeddingCacheRepository(settings)
             vectors, embed_stats = await embed_with_cache(
@@ -104,19 +141,29 @@ async def index_document_content(
                 "content_hash": chunk.content_hash,
                 "chunk_index": chunk.chunk_index,
                 "embedding_model": embeddings.model,
+                # CE-1: context persists on the row (tsv indexes it, display
+                # never shows it); identity keys feed the IN-8 dual-write so
+                # shadow embeddings cover the SAME enriched text.
+                "context_text": context,
+                "embed_key": embed_key,
+                "index_text": index_text,
                 **(
                     {"parent_hash": parent_hash_by_child[chunk.chunk_index]}
                     if chunk.chunk_index in parent_hash_by_child
                     else {}
                 ),
             }
-            for chunk, vector in zip(chunk_list, vectors[: len(chunk_list)], strict=True)
+            for chunk, vector, context, (embed_key, index_text) in zip(
+                chunk_list, vectors[: len(chunk_list)], contexts, identities, strict=True
+            )
         ]
         rows.extend(
             {
                 **parent,
                 "embedding": vector,
                 "embedding_model": embeddings.model,
+                "embed_key": parent["content_hash"],
+                "index_text": parent["content"],
             }
             for parent, vector in zip(parents, vectors[len(chunk_list) :], strict=True)
         )
@@ -134,7 +181,9 @@ async def index_document_content(
             shadow_vectors, _ = await embed_with_cache(
                 embeddings=target,
                 cache=embedding_cache or EmbeddingCacheRepository(settings),
-                items=[(row["content_hash"], row["content"]) for row in rows],
+                # CE-1: shadow embeds the SAME (possibly enriched) text as the
+                # active column — the pinned index-config invariant (Flow D/G).
+                items=[(row["embed_key"], row["index_text"]) for row in rows],
             )
             for row, vector in zip(rows, shadow_vectors, strict=True):
                 row["shadow_embedding"] = vector
@@ -157,6 +206,7 @@ async def index_document_content(
             "cacheHits": 0,
             "cacheMisses": 0,
             "chunking": None,
+            "context": None,
             "error": reason,
         }
 
@@ -169,5 +219,8 @@ async def index_document_content(
         "cacheHits": cache_stats["cacheHits"],
         "cacheMisses": cache_stats["cacheMisses"],
         "chunking": chunking_meta,
+        # CE-1: None when enrichment is off — baseline job stats keep their
+        # exact pre-CE-1 shape (byte-identical rule).
+        "context": context_stats,
         "error": None,
     }

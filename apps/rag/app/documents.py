@@ -53,12 +53,14 @@ WHERE document_id = $1 AND NOT (content_hash = ANY($2::text[]))
 """
 
 # Chunk-level idempotency (Flow A / IN-2): upsert on the chunk content_hash so
-# re-running indexing never duplicates rows. The `tsv` column is DB-generated.
+# re-running indexing never duplicates rows. The `tsv` column is DB-generated
+# (CE-1: over context_text + content, so the keyword arm sees enrichment too).
 _CHUNK_UPSERT_SQL = """
 INSERT INTO chunks
     (document_id, content, embedding, metadata, content_hash, chunk_index,
-     embedding_model, parent_chunk_id, embedding_shadow, shadow_embedding_model)
-VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9::vector, $10)
+     embedding_model, parent_chunk_id, embedding_shadow, shadow_embedding_model,
+     context_text)
+VALUES ($1, $2, $3::vector, $4, $5, $6, $7, $8, $9::vector, $10, $11)
 ON CONFLICT (content_hash) DO UPDATE SET
     document_id = EXCLUDED.document_id,
     content = EXCLUDED.content,
@@ -69,7 +71,8 @@ ON CONFLICT (content_hash) DO UPDATE SET
     parent_chunk_id = EXCLUDED.parent_chunk_id,
     embedding_shadow = COALESCE(EXCLUDED.embedding_shadow, chunks.embedding_shadow),
     shadow_embedding_model =
-        COALESCE(EXCLUDED.shadow_embedding_model, chunks.shadow_embedding_model)
+        COALESCE(EXCLUDED.shadow_embedding_model, chunks.shadow_embedding_model),
+    context_text = EXCLUDED.context_text
 RETURNING id, content_hash
 """
 
@@ -240,6 +243,7 @@ class DocumentsRepository:
                             if chunk.get("shadow_embedding")
                             else None,
                             chunk.get("shadow_model"),
+                            chunk.get("context_text"),
                         ),
                         seconds=self._settings.db_timeout_seconds,
                         operation="chunks.upsert_parent",
@@ -262,6 +266,7 @@ class DocumentsRepository:
                             if chunk.get("shadow_embedding")
                             else None,
                             chunk.get("shadow_model"),
+                            chunk.get("context_text"),
                         ),
                         seconds=self._settings.db_timeout_seconds,
                         operation="chunks.upsert",

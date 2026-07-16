@@ -83,6 +83,10 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             # IN-8 dual-write: new chunks also get shadow embeddings while a
             # re-embed migration is active.
             reembed_repository=ctx.get("reembed_repository") or ReembedRepository(settings),
+            # CE-1: enrichment client built once at startup (flag-gated);
+            # None + flag on falls back to a per-call default inside indexing.
+            context_client=ctx.get("context_client"),
+            context_cache=ctx.get("context_cache"),
         )
         await jobs.set_document_outcome(
             job_id=job_id,
@@ -96,6 +100,15 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             stats["embedBatches"] += outcome["embedBatches"]
             stats["cacheHits"] += outcome.get("cacheHits", 0)
             stats["cacheMisses"] += outcome.get("cacheMisses", 0)
+            # CE-1: enrichment economics per job — absent entirely on
+            # baseline runs (stats shape unchanged when the flag is off).
+            if outcome.get("context"):
+                agg = stats.setdefault(
+                    "context", {"hits": 0, "misses": 0, "fallbacks": 0, "costUsd": 0.0}
+                )
+                for key in ("hits", "misses", "fallbacks"):
+                    agg[key] += outcome["context"][key]
+                agg["costUsd"] = round(agg["costUsd"] + outcome["context"]["costUsd"], 8)
         else:
             stats["failures"].append(
                 {"documentId": entry["document_id"], "error": outcome["error"]}
@@ -160,6 +173,11 @@ async def startup(ctx: dict[str, Any]) -> None:
         if bucket is not None:
             embeddings_client = ThrottledEmbeddingsClient(embeddings_client, bucket)
     ctx["embeddings"] = embeddings_client
+    if settings.contextual_chunks_enabled:
+        # CE-1: one bucket-gated enrichment client per worker process.
+        from app.context_enrichment import build_context_client
+
+        ctx["context_client"] = build_context_client(settings)
     logger.info("arq worker started (redis=%s)", settings.redis_url)
 
 
