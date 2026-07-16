@@ -512,3 +512,38 @@ test.describe("zero-downtime re-embedding console (IN-8)", () => {
 		)
 	})
 })
+
+test.describe("mobile parity (CH-4)", () => {
+	test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+
+	test("chat streams with citations, history opens, no horizontal overflow", async ({
+		page,
+	}) => {
+		// ── query + stream + citations on a phone viewport ──
+		await page.goto("/chat")
+		const composer = page.getByRole("textbox", { name: "Question" })
+		await expect(composer).toBeVisible({ timeout: 15_000 })
+		await composer.fill("What is the meal reimbursement limit?")
+		await composer.press("Enter")
+		await expect(page.locator("[aria-label='Conversation'] .whitespace-pre-wrap").first()).toBeVisible(
+			{ timeout: 60_000 }
+		)
+		await expect(page.getByText(/\[1\]|Sources/i).first()).toBeVisible({ timeout: 60_000 })
+
+		// No horizontal overflow at 390px (responsive AC).
+		const overflow = await page.evaluate(
+			() => document.documentElement.scrollWidth - document.documentElement.clientWidth
+		)
+		expect(overflow).toBeLessThanOrEqual(1)
+
+		// ── history parity ──
+		await page.goto("/chat/history")
+		await expect(page.getByRole("link").filter({ hasText: /./ }).first()).toBeVisible({
+			timeout: 30_000,
+		})
+		const historyOverflow = await page.evaluate(
+			() => document.documentElement.scrollWidth - document.documentElement.clientWidth
+		)
+		expect(historyOverflow).toBeLessThanOrEqual(1)
+	})
+})
