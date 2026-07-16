@@ -3,8 +3,10 @@ import { ORPCError } from "@orpc/server"
 
 import type { ReportDefinition, ReportExport, ReportResult } from "@repo/contracts"
 
+import { env } from "@/config/env.config"
+
 import { EvalRunsService } from "../eval/eval-runs.service"
-import { buildReports, type ReportImpl } from "./report-definitions"
+import { buildReports, makePromQueryRange, type ReportImpl } from "./report-definitions"
 
 const EXPORT_ROW_CAP = 10_000
 
@@ -29,7 +31,10 @@ export class ReportsService {
 	private readonly reports: Record<string, ReportImpl>
 
 	constructor(evalRunsService: EvalRunsService) {
-		this.reports = buildReports({ evalRunsService })
+		this.reports = buildReports({
+			evalRunsService,
+			promQueryRange: makePromQueryRange(env.PROMETHEUS_URL),
+		})
 	}
 
 	list(): ReportDefinition[] {

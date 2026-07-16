@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server"
 import { and, desc, gte, ilike, lte, sql, type SQL } from "drizzle-orm"
 
 import type { ReportDefinition, ReportResult } from "@repo/contracts"
@@ -22,9 +23,43 @@ export interface ReportImpl {
 	>
 }
 
+/** One Prometheus range-query series: [unixSeconds, value] pairs. */
+export type PromQueryRange = (
+	query: string,
+	startSeconds: number,
+	endSeconds: number,
+	step: string
+) => Promise<[number, string][]>
+
 /** Services report implementations may close over (framework DI seam). */
 export interface ReportDeps {
 	evalRunsService: EvalRunsService
+	promQueryRange: PromQueryRange
+}
+
+/** Prometheus HTTP range API (OB-2 stack) — the single source for RP-4. */
+export function makePromQueryRange(baseUrl: string): PromQueryRange {
+	return async (query, startSeconds, endSeconds, step) => {
+		const url = new URL("/api/v1/query_range", baseUrl)
+		url.searchParams.set("query", query)
+		url.searchParams.set("start", String(startSeconds))
+		url.searchParams.set("end", String(endSeconds))
+		url.searchParams.set("step", step)
+		const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+		if (!response.ok) {
+			throw new ORPCError("BAD_GATEWAY", {
+				message: `Prometheus query failed (${response.status})`,
+			})
+		}
+		const body = (await response.json()) as {
+			status: string
+			data?: { result?: { values?: [number, string][] }[] }
+		}
+		if (body.status !== "success") {
+			throw new ORPCError("BAD_GATEWAY", { message: "Prometheus query failed" })
+		}
+		return body.data?.result?.[0]?.values ?? []
+	}
 }
 
 /**
@@ -353,12 +388,167 @@ export function buildQualityReport(evalRunsService: EvalRunsService): ReportImpl
 	}
 }
 
+/** DP-3 / PRD NFR acceptance targets — the report's breach thresholds. */
+const NFR = {
+	ttftP95Seconds: 2,
+	answerP95Seconds: 15,
+	errorRatePct: 1,
+	cacheHitRatePct: 30,
+} as const
+
+const PERF_SERIES: { key: string; label: string; query: (window: string) => string }[] = [
+	{
+		key: "cacheHitRatePct",
+		label: "Cache hit rate %",
+		query: window =>
+			`100 * (sum(rate(rag_cache_lookups_total{result=~"hits|semanticHits"}[${window}])) / sum(rate(rag_cache_lookups_total[${window}])))`,
+	},
+	{
+		key: "p50",
+		label: "API p50 (s)",
+		query: window =>
+			`histogram_quantile(0.5, sum by (le) (rate(rag_http_request_duration_seconds_bucket[${window}])))`,
+	},
+	{
+		key: "p95",
+		label: "API p95 (s)",
+		query: window =>
+			`histogram_quantile(0.95, sum by (le) (rate(rag_http_request_duration_seconds_bucket[${window}])))`,
+	},
+	{
+		key: "p99",
+		label: "API p99 (s)",
+		query: window =>
+			`histogram_quantile(0.99, sum by (le) (rate(rag_http_request_duration_seconds_bucket[${window}])))`,
+	},
+	{
+		key: "ttftP95",
+		label: "TTFT p95 (s)",
+		query: window =>
+			`histogram_quantile(0.95, sum by (le) (rate(rag_chat_ttft_seconds_bucket[${window}])))`,
+	},
+	{
+		key: "errorRatePct",
+		label: "Error rate %",
+		query: window =>
+			`100 * (sum(rate(rag_errors_total[${window}])) / sum(rate(rag_http_requests_total[${window}])))`,
+	},
+	{
+		key: "provider429",
+		label: "Provider 429s",
+		query: window => `sum(increase(rag_provider_429_total[${window}]))`,
+	},
+	{
+		key: "shed",
+		label: "Shed (bucket)",
+		query: window =>
+			`sum(increase(rag_provider_bucket_events_total{event="shed"}[${window}]))`,
+	},
+	{
+		key: "dbLongestQuerySeconds",
+		label: "DB longest query (s)",
+		query: () => `max(rag_db_longest_query_seconds)`,
+	},
+]
+
+function breachesFor(row: Record<string, number | string>): string {
+	const breaches: string[] = []
+	const number = (key: string) => (typeof row[key] === "number" ? (row[key] as number) : null)
+	const ttft = number("ttftP95")
+	if (ttft !== null && ttft > NFR.ttftP95Seconds) breaches.push(`ttftP95>${NFR.ttftP95Seconds}s`)
+	const p95 = number("p95")
+	if (p95 !== null && p95 > NFR.answerP95Seconds) breaches.push(`p95>${NFR.answerP95Seconds}s`)
+	const errors = number("errorRatePct")
+	if (errors !== null && errors >= NFR.errorRatePct) breaches.push(`errors>=${NFR.errorRatePct}%`)
+	const hits = number("cacheHitRatePct")
+	if (hits !== null && hits < NFR.cacheHitRatePct) breaches.push(`hitRate<${NFR.cacheHitRatePct}%`)
+	return breaches.join(", ")
+}
+
+/**
+ * RP-4: Cache & Performance Report — periodic decision report sourced from
+ * Prometheus (OB-2 stays the single metrics truth; Grafana remains the live
+ * view). Breach column + chart threshold line come from the DP-3/PRD NFR
+ * acceptance targets.
+ */
+export function buildCachePerformanceReport(promQueryRange: PromQueryRange): ReportImpl {
+	return {
+		definition: {
+			key: "cache-performance",
+			title: "Cache & Performance",
+			description:
+				"Cache hit-rate, latency percentiles incl. TTFT, error rate, provider 429/shed events, and DB-vs-API latency from Prometheus. Breaches of the load-test NFR targets (TTFT p95 <= 2s, p95 <= 15s, errors < 1%, hit-rate >= 30%) are flagged per interval.",
+			filters: [
+				{ key: "dateFrom", label: "From", type: "date" },
+				{ key: "dateTo", label: "To", type: "date" },
+				{ key: "step", label: "Interval", type: "select", options: ["5m", "1h"] },
+			],
+			columns: [
+				{ key: "time", label: "Time" },
+				...PERF_SERIES.map(series => ({ key: series.key, label: series.label })),
+				{ key: "breaches", label: "NFR breaches" },
+			],
+			chart: {
+				xKey: "time",
+				yKey: "ttftP95",
+				yLabel: "TTFT p95 (s)",
+				threshold: NFR.ttftP95Seconds,
+				thresholdLabel: "NFR: TTFT p95 <= 2s",
+			},
+		},
+		async run(filters, page, pageSize) {
+			const step = filters["step"] === "5m" ? "5m" : "1h"
+			const end = filters["dateTo"]
+				? new Date(filters["dateTo"]).getTime() + 24 * 3600 * 1000
+				: Date.now()
+			const start = filters["dateFrom"]
+				? new Date(filters["dateFrom"]).getTime()
+				: end - 24 * 3600 * 1000
+			const startSeconds = Math.floor(start / 1000)
+			const endSeconds = Math.floor(end / 1000)
+
+			const series = await Promise.all(
+				PERF_SERIES.map(async definition => ({
+					key: definition.key,
+					values: await promQueryRange(
+						definition.query(step),
+						startSeconds,
+						endSeconds,
+						step
+					),
+				}))
+			)
+			const byTime = new Map<number, Record<string, number | string>>()
+			for (const { key, values } of series) {
+				for (const [timestamp, value] of values) {
+					const numeric = Number.parseFloat(value)
+					if (Number.isNaN(numeric)) continue
+					const row = byTime.get(timestamp) ?? {}
+					row[key] = Number(numeric.toFixed(4))
+					byTime.set(timestamp, row)
+				}
+			}
+			const rows = [...byTime.entries()]
+				.sort(([a], [b]) => b - a)
+				.map(([timestamp, values]) => ({
+					time: new Date(timestamp * 1000).toISOString(),
+					...Object.fromEntries(
+						PERF_SERIES.map(definition => [definition.key, values[definition.key] ?? ""])
+					),
+					breaches: breachesFor(values),
+				}))
+			return { rows: rows.slice((page - 1) * pageSize, page * pageSize), total: rows.length }
+		},
+	}
+}
+
 /** RP-1 registry — grown through its consumers (RP-2..5). */
 export function buildReports(deps: ReportDeps): Record<string, ReportImpl> {
 	const reports = [
 		auditTrailReport,
 		usageCostReport,
 		buildQualityReport(deps.evalRunsService),
+		buildCachePerformanceReport(deps.promQueryRange),
 	]
 	return Object.fromEntries(reports.map(report => [report.definition.key, report]))
 }

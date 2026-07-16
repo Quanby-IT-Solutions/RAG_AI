@@ -651,3 +651,37 @@ test.describe("quality report (RP-3)", () => {
 		await expect(view.getByRole("cell", { name: "hitRate", exact: true })).toBeVisible()
 	})
 })
+
+test.describe("cache & performance report (RP-4)", () => {
+	test("summarizes prometheus series with NFR threshold overlay and breaches", async ({
+		page,
+	}) => {
+		await page.goto("/reports")
+		const view = page.getByTestId("reports-view")
+		await expect(view).toBeVisible({ timeout: 15_000 })
+
+		await view.getByRole("combobox").first().click()
+		await page.getByRole("option", { name: "Cache & Performance" }).click()
+		await expect(view.locator("[data-slot=card-title]")).toHaveText("Cache & Performance")
+
+		// The decision-report columns: cache, latency percentiles, TTFT,
+		// errors, provider events, DB-vs-API latency, and the breach flag.
+		for (const header of [
+			"Cache hit rate %",
+			"API p95 (s)",
+			"TTFT p95 (s)",
+			"Error rate %",
+			"Provider 429s",
+			"DB longest query (s)",
+			"NFR breaches",
+		]) {
+			await expect(view.getByRole("columnheader", { name: header })).toBeVisible({
+				timeout: 15_000,
+			})
+		}
+		await expect(view.locator("table tbody tr").first()).toBeVisible({ timeout: 15_000 })
+
+		// The NFR threshold line overlays the chart (breach visibility AC).
+		await expect(page.getByTestId("chart-threshold")).toBeVisible()
+	})
+})

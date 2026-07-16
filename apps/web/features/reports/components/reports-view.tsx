@@ -105,14 +105,26 @@ function ReportBarChart({
 		totals.set(x, (totals.get(x) ?? 0) + y)
 	}
 	const points = [...totals.entries()].sort(([a], [b]) => a.localeCompare(b))
-	const max = Math.max(...points.map(([, y]) => y), 0)
+	// Scale must include the NFR threshold so the overlay is always on-chart.
+	const max = Math.max(...points.map(([, y]) => y), chart.threshold ?? 0, 0)
 	if (points.length === 0 || max <= 0) return null
 	return (
 		<div className="flex flex-col gap-1" data-testid="report-chart">
 			<p className="text-muted-foreground text-xs">
 				{chart.yLabel} by {chart.xKey}
+				{chart.thresholdLabel ? (
+					<span className="text-destructive ml-2">({chart.thresholdLabel})</span>
+				) : null}
 			</p>
-			<div className="flex h-24 items-end gap-1">
+			<div className="relative flex h-24 items-end gap-1">
+				{chart.threshold !== undefined ? (
+					<div
+						data-testid="chart-threshold"
+						className="border-destructive absolute right-0 left-0 border-t border-dashed"
+						style={{ bottom: `${(chart.threshold / max) * 100}%` }}
+						title={chart.thresholdLabel ?? `threshold ${chart.threshold}`}
+					/>
+				) : null}
 				{points.map(([x, y]) => (
 					<div
 						key={x}

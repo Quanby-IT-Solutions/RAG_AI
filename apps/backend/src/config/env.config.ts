@@ -44,6 +44,9 @@ export const env = createEnv({
 		// Service JWT lifetime (seconds) — short-lived by design.
 		RAG_SERVICE_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(120),
 
+		// RP-4: Prometheus (OB-2) range API for the cache & performance report.
+		PROMETHEUS_URL: z.string().url().default("http://localhost:9090"),
+
 		// Authentication
 		BETTER_AUTH_SECRET: z.string(),
 		BETTER_AUTH_TRUSTED_ORIGINS: z.string(),

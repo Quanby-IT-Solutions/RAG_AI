@@ -27,6 +27,10 @@ jest.mock("@/common/database/database.client", () => ({
 	db: { select: jest.fn() },
 }))
 
+jest.mock("@/config/env.config", () => ({
+	env: { PROMETHEUS_URL: "http://localhost:9090" },
+}))
+
 const mockSelect = db.select as jest.Mock
 
 function auditRow(overrides: Partial<Record<string, unknown>> = {}) {
