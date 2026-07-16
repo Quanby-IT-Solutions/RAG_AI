@@ -160,6 +160,24 @@ export type {
 export { opsContract, ConfigEntrySchema, EffectiveConfigSchema } from "./modules/v1/ops/ops.contract.js"
 export type { ConfigEntry, EffectiveConfig } from "./modules/v1/ops/ops.contract.js"
 
+// Reporting (RP-1 framework)
+export {
+	reportsContract,
+	ReportDefinitionSchema,
+	ReportResultSchema,
+	ReportExportSchema,
+	RunReportRequestSchema,
+	ExportReportRequestSchema,
+} from "./modules/v1/reports/reports.contract.js"
+export type {
+	ReportDefinition,
+	ReportFilterDef,
+	ReportResult,
+	ReportExport,
+	RunReportRequest,
+	ExportReportRequest,
+} from "./modules/v1/reports/reports.contract.js"
+
 // Current-user access schemas
 export { meContract } from "./modules/v1/me/me.contract.js"
 export { MePermissionsSchema } from "./modules/v1/me/me.schema.js"

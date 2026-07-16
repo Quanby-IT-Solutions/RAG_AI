@@ -9,6 +9,7 @@ import { healthContract } from "./health/health.contract.js"
 import { meContract } from "./me/me.contract.js"
 import { opsContract } from "./ops/ops.contract.js"
 import { rbacContract } from "./rbac/rbac.contract.js"
+import { reportsContract } from "./reports/reports.contract.js"
 import { ticketContract } from "./tickets/tickets.contract.js"
 
 /**
@@ -27,6 +28,7 @@ export const v1Contract = oc.prefix("/v1").router(
 		apikeys: apiKeysContract,
 		eval: evalContract,
 		ops: opsContract,
+		reports: reportsContract,
 	})
 )
 

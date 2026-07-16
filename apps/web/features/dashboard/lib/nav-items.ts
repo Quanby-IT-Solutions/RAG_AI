@@ -1,5 +1,6 @@
 import {
 	BubbleChatIcon,
+	ChartLineData01Icon,
 	CheckmarkBadge01Icon,
 	DashboardSquare01Icon,
 	FolderLibraryIcon,
@@ -75,6 +76,15 @@ export const navItems: readonly DashboardNavItem[] = [
 		icon: CheckmarkBadge01Icon,
 		section: "Administration",
 		requiredPermission: ["eval.golden.manage", "eval.runs.execute"],
+	},
+	{
+		// RP-1 reporting console: audit trail now, RP-2..5 reports plug into
+		// the same framework. Export additionally needs reports.reports.export.
+		label: "Reports",
+		href: "/reports",
+		icon: ChartLineData01Icon,
+		section: "Administration",
+		requiredPermission: "reports.reports.view",
 	},
 	{
 		// OB-5: read-only effective-config review (secrets masked server-side).

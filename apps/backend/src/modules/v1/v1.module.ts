@@ -8,6 +8,7 @@ import { ExamplesModule } from "./examples/examples.module"
 import { HealthModule } from "./health/health.module"
 import { MeModule } from "./me/me.module"
 import { OpsModule } from "./ops/ops.module"
+import { ReportsModule } from "./reports/reports.module"
 import { RbacAdminModule } from "./rbac/rbac.module"
 import { TicketsModule } from "./tickets/tickets.module"
 
@@ -21,6 +22,7 @@ import { TicketsModule } from "./tickets/tickets.module"
 		HealthModule,
 		MeModule,
 		OpsModule,
+		ReportsModule,
 		RbacAdminModule,
 		TicketsModule,
 	],

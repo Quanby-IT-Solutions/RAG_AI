@@ -162,6 +162,7 @@ describe("navItems", () => {
 		"Chat",
 		"User Management",
 		"Evaluation",
+		"Reports",
 		"Configuration",
 		"API Keys",
 	])

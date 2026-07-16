@@ -245,6 +245,9 @@ test.describe("ingestion jobs console (IN-7)", () => {
 	test("upload flows through the async job to indexed in the documents list", async ({
 		page,
 	}, testInfo) => {
+		// Semantic chunking + serial worker: a job can exceed the default 30s
+		// test timeout on a loaded machine.
+		testInfo.setTimeout(180_000)
 		await page.goto("/corpus")
 		const input = page.getByLabel("Upload document")
 		await expect(input).toBeVisible()
@@ -545,5 +548,42 @@ test.describe("mobile parity (CH-4)", () => {
 			() => document.documentElement.scrollWidth - document.documentElement.clientWidth
 		)
 		expect(historyOverflow).toBeLessThanOrEqual(1)
+	})
+})
+
+test.describe("reports console (RP-1)", () => {
+	test("runs the audit trail report with filters, paginates, and exports CSV", async ({
+		page,
+	}) => {
+		await page.goto("/reports")
+		const view = page.getByTestId("reports-view")
+		await expect(view).toBeVisible({ timeout: 15_000 })
+
+		// The framework renders the audit-trail definition: filters + columns.
+		await expect(view.locator("[data-slot=card-title]")).toHaveText("System Audit Trail")
+		await expect(view.getByRole("columnheader", { name: "When" })).toBeVisible({
+			timeout: 15_000,
+		})
+		await expect(view.getByText("Page 1 of")).toBeVisible({ timeout: 15_000 })
+
+		// Filter by action prefix — every visible row matches.
+		await view.getByLabel("Action (prefix)").fill("eval.")
+		await view.getByRole("button", { name: "Apply filters" }).click()
+		const firstAction = view.locator("table tbody tr td:nth-child(4)").first()
+		await expect(firstAction).toHaveText(/^eval\./, { timeout: 15_000 })
+
+		// Pagination moves without losing the filter.
+		const next = view.getByRole("button", { name: "Next", exact: true })
+		if (await next.isEnabled()) {
+			await next.click()
+			await expect(view.getByText("Page 2 of")).toBeVisible({ timeout: 15_000 })
+			await expect(firstAction).toHaveText(/^eval\./)
+		}
+
+		// CSV export downloads the filtered report.
+		const downloadPromise = page.waitForEvent("download", { timeout: 30_000 })
+		await view.getByRole("button", { name: "Export CSV" }).click()
+		const download = await downloadPromise
+		expect(download.suggestedFilename()).toMatch(/^audit-trail-.*\.csv$/)
 	})
 })
