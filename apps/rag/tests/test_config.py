@@ -68,7 +68,9 @@ def test_unset_profile_defaults_to_baseline_all_flags_off(monkeypatch):
 @pytest.mark.parametrize("profile", ["baseline", "contextual", "agentic", "full"])
 def test_profile_expands_to_its_flag_set(monkeypatch, profile):
     _clear_env(monkeypatch)
-    s = Settings(_env_file=None, RAG_PROFILE=profile, **_ENV_SANS_PROFILE)
+    # CE-5: graph-enabled profiles fail fast without store credentials.
+    extra = {"NEO4J_PASSWORD": "test-pw"} if profile == "full" else {}
+    s = Settings(_env_file=None, RAG_PROFILE=profile, **extra, **_ENV_SANS_PROFILE)
     for field_name, expected in PROFILE_EXPANSION[profile].items():
         assert getattr(s, field_name) == expected, f"{profile}.{field_name}"
 
@@ -79,6 +81,7 @@ def test_explicit_flag_overrides_profile_preset(monkeypatch):
         _env_file=None,
         RAG_PROFILE="full",
         CONTEXTUAL_CHUNKS_ENABLED="false",
+        NEO4J_PASSWORD="test-pw",
         **_ENV_SANS_PROFILE,
     )
     # The explicit flag wins; the rest of the preset still applies.
