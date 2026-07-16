@@ -96,6 +96,28 @@ pnpm test
 e2e (Playwright) needs its own backend/web on 3005/3002 with a raised auth
 rate limit — see `packages/e2e-web` and the root `test:e2e:web` script.
 
+## Enabling contextual retrieval (CE-2 rollout runbook)
+
+Turning `CONTEXTUAL_CHUNKS_ENABLED` on (or `RAG_PROFILE=contextual`/higher)
+changes what every embedding means — roll it out through the IN-8 shadow
+path, never by re-ingesting in place:
+
+1. Set the profile/flag on the **rag service and the arq worker** and restart
+   both. New ingests enrich immediately; the existing corpus does not.
+2. Trigger a re-embed with the **same** embedding model (the CE-2 config
+   identity is model + enrichment + prompt version, so same-model is valid):
+   `POST /internal/reembed {"targetModel": "<live model>"}` (or the corpus
+   console button). The worker enriches every chunk (context cache — re-runs
+   are free), builds shadow embeddings of `context + chunk`, and lands
+   `context_text` on the rows (the keyword arm picks it up as it lands).
+3. Verification runs the golden set against the shadow automatically; the
+   migration only reaches `ready` when metrics hold ≥ baseline − tolerance.
+4. `POST /internal/reembed/cutover` — one atomic pointer flip switches the
+   vector arm to the enriched embeddings and bumps the response-cache
+   generation. `POST /internal/reembed/abort` at any earlier point reverts
+   shadow AND context (tsv falls back to raw text); serving is never touched.
+5. Compare the before/after eval runs — see docs/CONTEXTUAL-RETRIEVAL-RESULTS.md.
+
 ## Troubleshooting
 
 - **Port 3001 already in use** — stale Next dev server from a previous

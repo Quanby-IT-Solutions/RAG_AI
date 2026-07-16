@@ -606,6 +606,11 @@ export const reembedMigrations = createTable(
 			.default("shadowing"),
 		/** EV-2 verification metrics on the shadow index. */
 		metrics: t.jsonb("metrics").$type<Record<string, number>>(),
+		// CE-2 (Flow G): the migration's index-config identity is (model,
+		// enrichment on/off, prompt version) — captured at start so a
+		// same-model enrichment rollout is a first-class migration.
+		contextEnrichment: t.boolean("context_enrichment").notNull().default(false),
+		contextPromptVersion: t.text("context_prompt_version"),
 		error: t.text("error"),
 		triggeredBy: t.text("triggered_by").notNull(),
 		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

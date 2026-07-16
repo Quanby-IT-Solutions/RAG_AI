@@ -47,10 +47,22 @@ class FakeReembedRepository:
 
     async def next_shadow_batch(self, target_model, limit):
         pending = [c for c in self.chunks if c.get("shadow_model") != target_model]
-        return [{"id": c["id"], "content": c["content"]} for c in pending[:limit]]
+        return [
+            {
+                "id": c["id"],
+                "content": c["content"],
+                "content_hash": c.get("content_hash", f"hash-{c['id']}"),
+                "document_id": c.get("document_id", "doc-1"),
+                "doc_window": c.get("doc_window", "document window text"),
+            }
+            for c in pending[:limit]
+        ]
 
-    async def write_shadow(self, entries, target_model):
+    async def write_shadow(self, entries, target_model, *, contexts=None):
         self.shadow_writes.extend(entries)
+        self.context_writes = getattr(self, "context_writes", {})
+        if contexts is not None:
+            self.context_writes.update(contexts)
         by_id = {c["id"]: c for c in self.chunks}
         for chunk_id, _vector in entries:
             by_id[chunk_id]["shadow_model"] = target_model
@@ -59,8 +71,9 @@ class FakeReembedRepository:
         self.migration["status"] = status
         self.statuses.append({"status": status, "metrics": metrics, "error": error})
 
-    async def clear_shadow(self):
+    async def clear_shadow(self, *, clear_context=False):
         self.cleared = True
+        self.context_cleared = clear_context
         for chunk in self.chunks:
             chunk.pop("shadow_model", None)
 
@@ -181,7 +194,12 @@ async def test_active_pointer_defaults_to_the_live_column(settings):
     config = settings()
     redis = FakeRedis()
     active = await get_active_embedding(config, redis)
-    assert active == {"column": "embedding", "model": config.embedding_model}
+    assert active == {
+        "column": "embedding",
+        "model": config.embedding_model,
+        "contextEnrichment": False,
+        "contextPromptVersion": None,
+    }
 
 
 async def test_cutover_pointer_flips_column_and_model_together(settings):
@@ -192,7 +210,12 @@ async def test_cutover_pointer_flips_column_and_model_together(settings):
     active = await get_active_embedding(config, redis)
 
     # Pinned-model invariant: column and query model flip in ONE write.
-    assert active == {"column": "embedding_shadow", "model": "text-embedding-3-small"}
+    assert active == {
+        "column": "embedding_shadow",
+        "model": "text-embedding-3-small",
+        "contextEnrichment": False,
+        "contextPromptVersion": None,
+    }
 
 
 async def test_pointer_rejects_non_whitelisted_columns(settings):
@@ -203,6 +226,82 @@ async def test_pointer_rejects_non_whitelisted_columns(settings):
     active = await get_active_embedding(config, redis)
     assert active["column"] in ALLOWED_COLUMNS
     assert active["column"] == "embedding"  # fell back to the live column
+
+
+# ------------------------------------------------------- CE-2 enrichment rollout
+async def test_enrichment_migration_shadows_enriched_text_and_writes_context(settings):
+    from tests.test_context_enrichment import FakeContextCache, FakeContextClient
+
+    config = settings(CONTEXTUAL_CHUNKS_ENABLED="true")
+    migration = {
+        **MIGRATION,
+        "targetModel": config.embedding_model,  # same-model enrichment rollout
+        "contextEnrichment": True,
+        "contextPromptVersion": "v1",
+    }
+    repository = FakeReembedRepository(chunks(4), migration)
+
+    class CapturingEmbeddings(FakeTargetEmbeddings):
+        def __init__(self):
+            super().__init__()
+            self.texts: list[str] = []
+
+        async def embed_texts(self, texts):
+            self.texts.extend(texts)
+            return await super().embed_texts(texts)
+
+    embeddings = CapturingEmbeddings()
+    written = await run_shadow_pass(
+        settings=config,
+        repository=repository,
+        migration=migration,
+        embeddings=embeddings,
+        embedding_cache=PassthroughCache(),
+        context_client=FakeContextClient(),
+        context_cache=FakeContextCache(),
+    )
+
+    assert written == 4
+    # Every shadow embedding saw ENRICHED text (context + raw chunk).
+    for text in embeddings.texts:
+        assert text.startswith("Context for:")
+        assert "\n\nchunk content" in text
+    # The situating context landed on the rows in the same write.
+    assert len(repository.context_writes) == 4
+    assert all(c and c.startswith("Context for:") for c in repository.context_writes.values())
+
+
+async def test_plain_migration_shadow_pass_stays_raw(settings):
+    config = settings()
+    repository = FakeReembedRepository(chunks(2), MIGRATION)  # no enrichment fields
+
+    written = await run_shadow_pass(
+        settings=config,
+        repository=repository,
+        migration=dict(MIGRATION),
+        embeddings=FakeTargetEmbeddings(),
+        embedding_cache=PassthroughCache(),
+    )
+
+    assert written == 2
+    assert getattr(repository, "context_writes", {}) == {}
+
+
+async def test_enrichment_pointer_roundtrips_config_identity(settings):
+    config = settings()
+    redis = FakeRedis()
+
+    await set_active_embedding(
+        redis,
+        column="embedding_shadow",
+        model=config.embedding_model,
+        context_enrichment=True,
+        context_prompt_version="v1",
+    )
+    active = await get_active_embedding(config, redis)
+
+    assert active["contextEnrichment"] is True
+    assert active["contextPromptVersion"] == "v1"
 
 
 # ------------------------------------------------- retrieval uses the pointer

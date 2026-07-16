@@ -150,6 +150,10 @@ export const ReembedMigrationSchema = z.object({
 	targetModel: z.string().optional(),
 	status: ReembedStatusSchema,
 	metrics: z.record(z.string(), z.number()).nullable().optional(),
+	// CE-2: index-config identity of the migration (enrichment on/off +
+	// prompt version) — shown in the console next to the target model.
+	contextEnrichment: z.boolean().optional(),
+	contextPromptVersion: z.string().nullable().optional(),
 	error: z.string().nullable().optional(),
 	triggeredBy: z.string().optional(),
 	createdAt: z.string().optional(),

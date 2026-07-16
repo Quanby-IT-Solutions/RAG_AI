@@ -148,11 +148,15 @@ async def enrich_chunks(
     client: SupportsComplete,
     cache: ContextCacheRepository,
     settings: Settings,
+    windows: dict[str, str] | None = None,
 ) -> tuple[list[str | None], dict[str, Any]]:
     """Situating context per chunk, cache-first (Flow G).
 
-    Returns contexts aligned with `chunks` (None = fallback to raw text) plus
-    stats {hits, misses, fallbacks, costUsd}. A fully-cached input makes ZERO
+    `windows` (optional, keyed by chunk hash) supplies a per-chunk document
+    window when one batch spans documents (CE-2 shadow pass) — everything
+    still runs through ONE cache fetch/store round-trip. Returns contexts
+    aligned with `chunks` (None = fallback to raw text) plus stats
+    {hits, misses, fallbacks, costUsd}. A fully-cached input makes ZERO
     LLM calls; any per-chunk failure yields None for that chunk only."""
     if not chunks:
         return [], {"hits": 0, "misses": 0, "fallbacks": 0, "costUsd": 0.0}
@@ -163,13 +167,18 @@ async def enrich_chunks(
         prompt_version=CONTEXT_PROMPT_VERSION,
         hashes=list(dict.fromkeys(hashes)),
     )
-    window = document_text[:_DOC_WINDOW_CHARS]
+    default_window = document_text[:_DOC_WINDOW_CHARS]
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CALLS)
     cost_total = 0.0
     cost_lock = asyncio.Lock()
 
     async def generate(chunk: Any) -> str | None:
         nonlocal cost_total
+        window = default_window
+        if windows is not None:
+            window = (windows.get(chunk.content_hash) or default_window)[
+                :_DOC_WINDOW_CHARS
+            ]
         async with semaphore:
             try:
                 text, usage = await client.complete(

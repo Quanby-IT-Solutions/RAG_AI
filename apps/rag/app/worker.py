@@ -212,3 +212,6 @@ class WorkerSettings:
     # One failed attempt is final for now: re-runs are explicit (console
     # button / rerun endpoint) because the pipeline is upsert-idempotent.
     max_tries = 1
+    # CE-2: shadow re-embed migrations enrich + re-embed the whole corpus in
+    # one task — arq's 300s default silently cancels long runs mid-flight.
+    job_timeout = 3600
