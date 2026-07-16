@@ -289,6 +289,12 @@ class Settings(BaseSettings):
     graph_rag_enabled: bool | None = Field(alias="GRAPH_RAG_ENABLED", default=None)
     multimodal_enabled: bool | None = Field(alias="MULTIMODAL_ENABLED", default=None)
 
+    # --- Graph RAG store (CE-5) — only consulted when GRAPH_RAG_ENABLED;
+    # baseline deployments never touch Neo4j (no connection, no health check).
+    neo4j_uri: str = Field(alias="NEO4J_URI", default="bolt://localhost:7687")
+    neo4j_user: str = Field(alias="NEO4J_USER", default="neo4j")
+    neo4j_password: SecretStr | None = Field(alias="NEO4J_PASSWORD", default=None)
+
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)
     redis_timeout_seconds: float = Field(alias="REDIS_TIMEOUT_SECONDS", default=5.0, gt=0)
@@ -306,6 +312,14 @@ class Settings(BaseSettings):
         for field_name, preset in PROFILE_EXPANSION[self.rag_profile].items():
             if getattr(self, field_name) is None:
                 setattr(self, field_name, preset)
+        return self
+
+    @model_validator(mode="after")
+    def _require_neo4j_credentials_when_graph_enabled(self) -> Self:
+        """CE-5 fail-fast: the graph flag without store credentials is a
+        misconfiguration, named at boot (F1 contract)."""
+        if self.graph_rag_enabled and self.neo4j_password is None:
+            raise ValueError("NEO4J_PASSWORD is required when GRAPH_RAG_ENABLED=true")
         return self
 
     @model_validator(mode="after")

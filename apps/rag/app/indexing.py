@@ -35,6 +35,7 @@ async def index_document_content(
     shadow_embeddings: Any = None,
     context_client: Any = None,
     context_cache: Any = None,
+    active_embedding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Index one normalized document (text/pages live in its metadata jsonb).
 
@@ -169,25 +170,44 @@ async def index_document_content(
         )
         # IN-8 dual-write: while a re-embed migration is active, new chunks
         # also get shadow embeddings (target model, IN-6 cache namespace).
+        # Post-cutover (Flow D gap, surfaced by CE-5): the query path reads
+        # the SHADOW column — new chunks must land there too, with the active
+        # model, or they are invisible to the vector arm until the soak-end
+        # column consolidation.
         migration = None
         if reembed_repository is not None:
             migration = await reembed_repository.active_migration()
+        shadow_target: str | None = None
         if migration is not None:
-            from app.reembed import TargetEmbeddingsClient
+            shadow_target = migration["targetModel"]
+        elif (
+            active_embedding is not None
+            and active_embedding.get("column") == "embedding_shadow"
+        ):
+            shadow_target = active_embedding["model"]
+        if shadow_target is not None:
+            if shadow_target == embeddings.model:
+                # Same model (e.g. a CE-2 enrichment rollout): the vector is
+                # identical by construction — copy, never re-embed.
+                for row in rows:
+                    row["shadow_embedding"] = row["embedding"]
+                    row["shadow_model"] = shadow_target
+            else:
+                from app.reembed import TargetEmbeddingsClient
 
-            target = shadow_embeddings or TargetEmbeddingsClient(
-                settings, migration["targetModel"]
-            )
-            shadow_vectors, _ = await embed_with_cache(
-                embeddings=target,
-                cache=embedding_cache or EmbeddingCacheRepository(settings),
-                # CE-1: shadow embeds the SAME (possibly enriched) text as the
-                # active column — the pinned index-config invariant (Flow D/G).
-                items=[(row["embed_key"], row["index_text"]) for row in rows],
-            )
-            for row, vector in zip(rows, shadow_vectors, strict=True):
-                row["shadow_embedding"] = vector
-                row["shadow_model"] = migration["targetModel"]
+                target = shadow_embeddings or TargetEmbeddingsClient(
+                    settings, shadow_target
+                )
+                shadow_vectors, _ = await embed_with_cache(
+                    embeddings=target,
+                    cache=embedding_cache or EmbeddingCacheRepository(settings),
+                    # CE-1: shadow embeds the SAME (possibly enriched) text as
+                    # the active column — pinned index-config invariant.
+                    items=[(row["embed_key"], row["index_text"]) for row in rows],
+                )
+                for row, vector in zip(rows, shadow_vectors, strict=True):
+                    row["shadow_embedding"] = vector
+                    row["shadow_model"] = shadow_target
 
         indexed = await repository.index_chunks(
             document_id=document["id"],
@@ -214,6 +234,16 @@ async def index_document_content(
     return {
         "status": "indexed",
         "document": indexed,
+        # CE-5: light chunk views for the worker's post-transaction graph
+        # step (Flow I) — content + identity only, no vectors.
+        "indexedChunks": [
+            {
+                "content": row["content"],
+                "content_hash": row["content_hash"],
+                "metadata": row.get("metadata"),
+            }
+            for row in rows
+        ],
         "chunkCount": len(chunk_list),
         "embedBatches": batches,
         "cacheHits": cache_stats["cacheHits"],

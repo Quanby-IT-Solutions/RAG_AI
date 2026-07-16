@@ -60,6 +60,7 @@ _GROUPS: list[tuple[str, str]] = [
     ("rate_limit", "security"),
     ("git_sha", "evaluation"),
     ("eval_gate", "evaluation"),
+    ("neo4j_", "graph"),
     ("rag_profile", "profile"),
     ("contextual_chunks", "profile"),
     ("rag_mode", "profile"),

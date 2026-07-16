@@ -502,6 +502,26 @@ export const contextCache = createTable(
 	t => [primaryKey({ columns: [t.chunkHash, t.model, t.promptVersion] })]
 )
 
+/**
+ * Graph-extraction cache (CE-5, Flow I — same economics as `context_cache`).
+ * Keyed on (chunk content_hash, model, prompt version); the value is the
+ * extracted {entities, relations} JSON. Re-ingesting unchanged content never
+ * re-extracts; a prompt/model change is a clean namespace. Written/read by
+ * the Python RAG service. The Neo4j graph itself is DERIVED data —
+ * rebuildable from Postgres + this cache via an ingestion re-run.
+ */
+export const graphExtractionCache = createTable(
+	"graph_extraction_cache",
+	t => ({
+		chunkHash: t.text("chunk_hash").notNull(),
+		model: t.text("model").notNull(),
+		promptVersion: t.text("prompt_version").notNull(),
+		extraction: t.jsonb("extraction").$type<unknown>().notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [primaryKey({ columns: [t.chunkHash, t.model, t.promptVersion] })]
+)
+
 // ============================================================================
 // GOLDEN EVALUATION SET (evaluation — EV-1)
 // ============================================================================
@@ -772,6 +792,7 @@ export const schema = Object.assign(
 		evalBaselines,
 		embeddingCache,
 		contextCache,
+		graphExtractionCache,
 		reembedMigrations,
 		reportSchedules,
 		reportFiles,

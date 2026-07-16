@@ -361,6 +361,62 @@ async def test_ingestion_during_a_migration_dual_writes_shadow_embeddings(settin
         assert row["shadow_model"] == MIGRATION["targetModel"]
 
 
+async def test_post_cutover_ingestion_writes_the_active_shadow_column(settings):
+    """Flow D gap (surfaced by CE-5): after cutover the query path reads
+    embedding_shadow — new chunks must land there too or they are invisible
+    to the vector arm."""
+    from app.indexing import index_document_content
+    from tests.test_ingest import FakeEmbeddingsClient
+    from tests.test_parent_doc import CapturingRepository, make_document
+    from tests.test_worker import NullEmbeddingCache, NullReembedRepository
+
+    config = settings(CHUNKING_STRATEGY="recursive", CHUNK_MIN_CHARS="10", CHUNK_MAX_CHARS="60")
+    repository = CapturingRepository()
+    embeddings = FakeEmbeddingsClient()
+
+    outcome = await index_document_content(
+        document=make_document("some policy text. more policy text here."),
+        settings=config,
+        repository=repository,
+        embeddings=embeddings,
+        embedding_cache=NullEmbeddingCache(),
+        reembed_repository=NullReembedRepository(),  # no ACTIVE migration
+        active_embedding={
+            "column": "embedding_shadow",
+            "model": embeddings.model,  # same-model cutover (CE-2 rollout)
+        },
+    )
+
+    assert outcome["status"] == "indexed"
+    for row in repository.indexed["chunks"]:
+        # Same model: the identical vector is COPIED, never re-embedded.
+        assert row["shadow_embedding"] == row["embedding"]
+        assert row["shadow_model"] == embeddings.model
+
+
+async def test_post_cutover_pointer_on_live_column_writes_no_shadow(settings):
+    from app.indexing import index_document_content
+    from tests.test_ingest import FakeEmbeddingsClient
+    from tests.test_parent_doc import CapturingRepository, make_document
+    from tests.test_worker import NullEmbeddingCache, NullReembedRepository
+
+    config = settings(CHUNKING_STRATEGY="recursive", CHUNK_MIN_CHARS="10", CHUNK_MAX_CHARS="60")
+    repository = CapturingRepository()
+
+    await index_document_content(
+        document=make_document("some policy text. more policy text here."),
+        settings=config,
+        repository=repository,
+        embeddings=FakeEmbeddingsClient(),
+        embedding_cache=NullEmbeddingCache(),
+        reembed_repository=NullReembedRepository(),
+        active_embedding={"column": "embedding", "model": config.embedding_model},
+    )
+
+    for row in repository.indexed["chunks"]:
+        assert "shadow_embedding" not in row
+
+
 async def test_ingestion_without_a_migration_writes_no_shadow(settings):
     from app.indexing import index_document_content
     from tests.test_ingest import FakeEmbeddingsClient

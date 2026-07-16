@@ -36,6 +36,20 @@ async def run_health_checks(settings: Settings) -> dict[str, str]:
     except Exception as exc:
         logger.warning("Redis health check failed: %s", exc)
         checks["redis"] = "down"
+    # CE-5: the graph store is a component ONLY when the flag is on —
+    # baseline deployments never touch (or report on) Neo4j.
+    if settings.graph_rag_enabled:
+        from app.graph import GraphRepository
+
+        graph_repository = GraphRepository(settings)
+        try:
+            await graph_repository.verify_connectivity()
+            checks["neo4j"] = "up"
+        except Exception as exc:
+            logger.warning("Neo4j health check failed: %s", exc)
+            checks["neo4j"] = "down"
+        finally:
+            await graph_repository.close()
     return checks
 
 
@@ -142,9 +156,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # OB-3: readiness gates on DB + Redis only; provider reachability is
         # informational (breaker owns runtime failover) and interval-cached.
         # OB-4: a draining replica fails readiness so the LB stops routing.
-        ready = all(status == "up" for status in checks.values()) and not drain.draining
+        # CE-5 (Flow I): the graph store is an ACCELERATOR — neo4j down means
+        # degraded (hybrid continues without it), never unavailable.
+        ready = (
+            all(status == "up" for name, status in checks.items() if name != "neo4j")
+            and not drain.draining
+        )
         providers = await health_checks.check_providers(settings)
-        degraded = any(status != "up" for status in providers.values())
+        degraded = any(status != "up" for status in providers.values()) or (
+            checks.get("neo4j") == "down"
+        )
         if not ready:
             response.status_code = 503
         return {

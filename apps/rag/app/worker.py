@@ -47,6 +47,17 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
     job = await jobs.fetch_job(job_id)
     job_documents = await jobs.fetch_job_documents(job_id)
 
+    # Flow D gap fix (CE-5): resolve the active index pointer once per job so
+    # post-cutover ingestion writes the column the query path actually reads.
+    active_embedding = ctx.get("active_embedding")
+    if active_embedding is None and ctx.get("pointer_redis") is not None:
+        from app.reembed import get_active_embedding
+
+        try:
+            active_embedding = await get_active_embedding(settings, ctx["pointer_redis"])
+        except Exception:
+            logger.warning("reembed.pointer_resolve_failed", exc_info=True)
+
     stats: dict[str, Any] = {
         "documents": len(job_documents),
         "chunks": 0,
@@ -87,6 +98,7 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             # None + flag on falls back to a per-call default inside indexing.
             context_client=ctx.get("context_client"),
             context_cache=ctx.get("context_cache"),
+            active_embedding=active_embedding,
         )
         await jobs.set_document_outcome(
             job_id=job_id,
@@ -100,6 +112,40 @@ async def process_ingestion_job(ctx: dict[str, Any], job_id: str) -> dict[str, A
             stats["embedBatches"] += outcome["embedBatches"]
             stats["cacheHits"] += outcome.get("cacheHits", 0)
             stats["cacheMisses"] += outcome.get("cacheMisses", 0)
+            # CE-5 (Flow I): graph extraction AFTER the Postgres transaction —
+            # a graph failure is recorded, the DOCUMENT still succeeds, and a
+            # job re-run repairs the graph only (extraction cache = free).
+            if settings.graph_rag_enabled:
+                try:
+                    from app.graph import index_document_graph
+
+                    graph_stats = await index_document_graph(
+                        document=outcome["document"],
+                        chunks=outcome.get("indexedChunks", []),
+                        settings=settings,
+                        client=ctx.get("graph_client") or _graph_client(ctx, settings),
+                        cache=ctx.get("graph_cache") or _graph_cache(ctx, settings),
+                        repository=ctx.get("graph_repository")
+                        or _graph_repository(ctx, settings),
+                    )
+                    agg = stats.setdefault(
+                        "graph",
+                        {"hits": 0, "misses": 0, "fallbacks": 0, "edges": 0, "costUsd": 0.0},
+                    )
+                    for key in ("hits", "misses", "fallbacks", "edges"):
+                        agg[key] += graph_stats.get(key, 0)
+                    agg["costUsd"] = round(
+                        agg["costUsd"] + graph_stats.get("costUsd", 0.0), 8
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "graph.document_graph_failed document=%s",
+                        entry["document_id"],
+                        exc_info=True,
+                    )
+                    stats.setdefault("graphFailures", []).append(
+                        {"documentId": entry["document_id"], "error": str(exc)}
+                    )
             # CE-1: enrichment economics per job — absent entirely on
             # baseline runs (stats shape unchanged when the flag is off).
             if outcome.get("context"):
@@ -160,6 +206,32 @@ async def purge_expired_conversations(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"purged": purged, "retentionDays": settings.chat_retention_days}
 
 
+def _graph_client(ctx: dict[str, Any], settings: Any) -> Any:
+    """CE-5: one bucket-gated extraction client per worker process (the
+    context-enrichment factory is the same cheap-fast shape)."""
+    if "graph_client" not in ctx:
+        from app.context_enrichment import build_context_client
+
+        ctx["graph_client"] = build_context_client(settings)
+    return ctx["graph_client"]
+
+
+def _graph_cache(ctx: dict[str, Any], settings: Any) -> Any:
+    if "graph_cache" not in ctx:
+        from app.graph import GraphExtractionCacheRepository
+
+        ctx["graph_cache"] = GraphExtractionCacheRepository(settings)
+    return ctx["graph_cache"]
+
+
+def _graph_repository(ctx: dict[str, Any], settings: Any) -> Any:
+    if "graph_repository" not in ctx:
+        from app.graph import GraphRepository
+
+        ctx["graph_repository"] = GraphRepository(settings)
+    return ctx["graph_repository"]
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     init_tracing(settings)
@@ -173,6 +245,10 @@ async def startup(ctx: dict[str, Any]) -> None:
         if bucket is not None:
             embeddings_client = ThrottledEmbeddingsClient(embeddings_client, bucket)
     ctx["embeddings"] = embeddings_client
+    # Flow D gap fix (CE-5): the worker follows the active-embedding pointer.
+    import redis.asyncio as aioredis
+
+    ctx["pointer_redis"] = aioredis.from_url(settings.redis_url, decode_responses=True)
     if settings.contextual_chunks_enabled:
         # CE-1: one bucket-gated enrichment client per worker process.
         from app.context_enrichment import build_context_client

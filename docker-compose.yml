@@ -352,9 +352,29 @@ services:
       - app-network
     restart: unless-stopped
 
+  # ── CE-5 Graph RAG store (opt-in): docker compose --profile graph up
+  # Only needed when GRAPH_RAG_ENABLED=true (RAG_PROFILE=full); baseline
+  # deployments never start it. The graph is DERIVED data — rebuildable from
+  # Postgres via an ingestion re-run, never migrated.
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: rag-ai-neo4j
+    profiles: ["graph"]
+    environment:
+      - NEO4J_AUTH=neo4j/devpassword
+    ports:
+      - "127.0.0.1:7687:7687" # bolt (rag service)
+      - "127.0.0.1:7474:7474" # browser (dev convenience)
+    volumes:
+      - neo4j-data:/data
+    networks:
+      - app-network
+    restart: unless-stopped
+
 networks:
   app-network:
     driver: bridge
 
 volumes:
   postgres-data:
+  neo4j-data:
