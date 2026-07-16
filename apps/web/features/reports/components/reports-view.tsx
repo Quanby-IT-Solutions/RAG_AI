@@ -153,6 +153,9 @@ export function ReportsView() {
 
 	const totalPages = result ? Math.max(1, Math.ceil(result.total / result.pageSize)) : 1
 	const error = listError ?? runError ?? exportReport.error
+	// Reports may return a mode-dependent shape (RP-3's comparison), so the
+	// rendered columns come from the RESULT, not the static definition.
+	const columns = result?.columns ?? definition?.columns ?? []
 
 	if (isPending) {
 		return <p className="text-muted-foreground p-6 text-sm">Loading reports…</p>
@@ -267,7 +270,7 @@ export function ReportsView() {
 							<Table>
 								<TableHeader>
 									<TableRow>
-										{definition.columns.map(column => (
+										{columns.map(column => (
 											<TableHead key={column.key}>{column.label}</TableHead>
 										))}
 									</TableRow>
@@ -275,7 +278,7 @@ export function ReportsView() {
 								<TableBody>
 									{(result?.rows ?? []).map((row, index) => (
 										<TableRow key={index}>
-											{definition.columns.map(column => (
+											{columns.map(column => (
 												<TableCell key={column.key} className="whitespace-nowrap">
 													{formatCell(row[column.key])}
 												</TableCell>
@@ -285,7 +288,7 @@ export function ReportsView() {
 									{result && result.rows.length === 0 ? (
 										<TableRow>
 											<TableCell
-												colSpan={definition.columns.length}
+												colSpan={columns.length}
 												className="text-muted-foreground text-center"
 											>
 												No rows match the current filters.

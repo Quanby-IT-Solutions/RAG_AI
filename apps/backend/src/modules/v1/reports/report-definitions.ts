@@ -5,13 +5,26 @@ import { auditLog } from "@repo/db/schema"
 
 import { db } from "@/common/database/database.client"
 
+import type { EvalRunsService } from "../eval/eval-runs.service"
+
 export interface ReportImpl {
 	definition: ReportDefinition
 	run(
 		filters: Record<string, string>,
 		page: number,
 		pageSize: number
-	): Promise<Pick<ReportResult, "rows" | "total">>
+	): Promise<
+		Pick<ReportResult, "rows" | "total"> & {
+			/** Overrides the definition columns for mode-dependent shapes
+			 * (e.g. RP-3's two-run comparison rows). */
+			columns?: ReportResult["columns"]
+		}
+	>
+}
+
+/** Services report implementations may close over (framework DI seam). */
+export interface ReportDeps {
+	evalRunsService: EvalRunsService
 }
 
 /**
@@ -196,8 +209,156 @@ export const usageCostReport: ReportImpl = {
 	},
 }
 
-/** RP-1 registry — RP-2..5 append here. */
-export const REPORTS: Record<string, ReportImpl> = {
-	[auditTrailReport.definition.key]: auditTrailReport,
-	[usageCostReport.definition.key]: usageCostReport,
+/**
+ * Mirrors the rag service's EVAL_GATE_TOLERANCE default (app/eval_gate.py) —
+ * the gate itself always runs in Python; this value only drives the report's
+ * highlighting of runs that WOULD fail it.
+ */
+const GATE_TOLERANCE = 0.02
+const GATED_METRICS = [
+	"hitRate",
+	"mrr",
+	"precisionAtK",
+	"recallAtK",
+	"faithfulness",
+	"answerRelevancy",
+] as const
+
+const QUALITY_METRIC_COLUMNS = GATED_METRICS.map(metric => ({
+	key: metric,
+	label: metric,
+}))
+
+function metricValue(metrics: Record<string, number> | null, key: string): number | "" {
+	const value = metrics?.[key]
+	return typeof value === "number" ? Number(value.toFixed(4)) : ""
+}
+
+/**
+ * RP-3: Retrieval & Answer Quality Report — eval-run metrics trended over
+ * time with the active baseline (EV-4) marked, per-run config snapshots, and
+ * gate-failure highlighting. Setting BOTH compareBase and compareCandidate
+ * switches the result shape to per-metric deltas, reusing EV-2's comparison.
+ */
+export function buildQualityReport(evalRunsService: EvalRunsService): ReportImpl {
+	return {
+		definition: {
+			key: "quality",
+			title: "Retrieval & Answer Quality",
+			description:
+				"Golden-set metrics per eval run with the active baseline marked and would-fail-gate metrics highlighted. Fill both compare fields with run ids for per-metric deltas (EV-2).",
+			filters: [
+				{
+					key: "kind",
+					label: "Kind",
+					type: "select",
+					options: ["retrieval", "generation"],
+				},
+				{
+					key: "status",
+					label: "Status",
+					type: "select",
+					options: ["completed", "failed"],
+				},
+				{ key: "dateFrom", label: "From", type: "date" },
+				{ key: "dateTo", label: "To", type: "date" },
+				{ key: "compareBase", label: "Compare: base run id", type: "text" },
+				{ key: "compareCandidate", label: "Compare: candidate run id", type: "text" },
+			],
+			columns: [
+				{ key: "createdAt", label: "When" },
+				{ key: "runId", label: "Run" },
+				{ key: "kind", label: "Kind" },
+				{ key: "status", label: "Status" },
+				{ key: "gitSha", label: "Git SHA" },
+				{ key: "baseline", label: "Baseline" },
+				...QUALITY_METRIC_COLUMNS,
+				{ key: "gateFailures", label: "Below baseline (would fail gate)" },
+				{ key: "config", label: "Config snapshot" },
+			],
+			chart: { xKey: "day", yKey: "hitRate", yLabel: "Hit rate" },
+		},
+		async run(filters, page, pageSize) {
+			// Comparison mode: EV-2's per-metric deltas as the result shape.
+			if (filters["compareBase"] && filters["compareCandidate"]) {
+				const comparison = await evalRunsService.compare(
+					filters["compareBase"],
+					filters["compareCandidate"]
+				)
+				const rows = Object.entries(comparison.deltas).map(([metric, delta]) => ({
+					metric,
+					base: metricValue(comparison.base.metrics, metric),
+					candidate: metricValue(comparison.candidate.metrics, metric),
+					delta: Number(delta.toFixed(4)),
+				}))
+				return {
+					columns: [
+						{ key: "metric", label: "Metric" },
+						{ key: "base", label: `Base (${comparison.base.gitSha})` },
+						{ key: "candidate", label: `Candidate (${comparison.candidate.gitSha})` },
+						{ key: "delta", label: "Delta" },
+					],
+					rows: rows.slice((page - 1) * pageSize, page * pageSize),
+					total: rows.length,
+				}
+			}
+
+			const [runs, baseline] = await Promise.all([
+				evalRunsService.list(),
+				evalRunsService.currentBaseline(),
+			])
+			const filtered = runs.filter(run => {
+				if (filters["kind"] && run.kind !== filters["kind"]) return false
+				if (filters["status"] && run.status !== filters["status"]) return false
+				const created = new Date(run.createdAt).getTime()
+				if (filters["dateFrom"] && created < new Date(filters["dateFrom"]).getTime()) {
+					return false
+				}
+				if (filters["dateTo"]) {
+					const end = new Date(filters["dateTo"])
+					end.setDate(end.getDate() + 1)
+					if (created >= end.getTime()) return false
+				}
+				return true
+			})
+			const rows = filtered.map(run => {
+				const failing = baseline
+					? GATED_METRICS.filter(metric => {
+							const candidate = run.metrics?.[metric]
+							const base = baseline.metrics?.[metric]
+							return (
+								typeof candidate === "number" &&
+								typeof base === "number" &&
+								candidate < base - GATE_TOLERANCE
+							)
+						})
+					: []
+				return {
+					createdAt: run.createdAt,
+					day: new Date(run.createdAt).toISOString().slice(0, 10),
+					runId: run.id,
+					kind: run.kind,
+					status: run.status,
+					gitSha: run.gitSha,
+					baseline: baseline?.runId === run.id ? "active" : "",
+					...Object.fromEntries(
+						GATED_METRICS.map(metric => [metric, metricValue(run.metrics, metric)])
+					),
+					gateFailures: failing.join(", "),
+					config: JSON.stringify(run.config),
+				}
+			})
+			return { rows: rows.slice((page - 1) * pageSize, page * pageSize), total: rows.length }
+		},
+	}
+}
+
+/** RP-1 registry — grown through its consumers (RP-2..5). */
+export function buildReports(deps: ReportDeps): Record<string, ReportImpl> {
+	const reports = [
+		auditTrailReport,
+		usageCostReport,
+		buildQualityReport(deps.evalRunsService),
+	]
+	return Object.fromEntries(reports.map(report => [report.definition.key, report]))
 }

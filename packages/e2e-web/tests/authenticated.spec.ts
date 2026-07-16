@@ -618,3 +618,36 @@ test.describe("usage & cost report (RP-2)", () => {
 		await expect(spendCells.first()).toHaveText("eval", { timeout: 15_000 })
 	})
 })
+
+test.describe("quality report (RP-3)", () => {
+	test("trends eval metrics, marks the baseline, and compares two runs", async ({ page }) => {
+		await page.goto("/reports")
+		const view = page.getByTestId("reports-view")
+		await expect(view).toBeVisible({ timeout: 15_000 })
+
+		await view.getByRole("combobox").first().click()
+		await page.getByRole("option", { name: "Retrieval & Answer Quality" }).click()
+		await expect(view.locator("[data-slot=card-title]")).toHaveText(
+			"Retrieval & Answer Quality"
+		)
+
+		// Trend rows carry per-metric columns and the active baseline marker.
+		await expect(view.getByRole("columnheader", { name: "hitRate" })).toBeVisible({
+			timeout: 15_000,
+		})
+		await expect(view.getByRole("cell", { name: "active", exact: true }).first()).toBeVisible({
+			timeout: 15_000,
+		})
+
+		// Two-run comparison reuses EV-2's deltas and swaps the result shape.
+		const runA = await view.locator("table tbody tr td:nth-child(2)").nth(0).textContent()
+		const runB = await view.locator("table tbody tr td:nth-child(2)").nth(1).textContent()
+		await view.getByLabel("Compare: base run id").fill((runB ?? "").trim())
+		await view.getByLabel("Compare: candidate run id").fill((runA ?? "").trim())
+		await view.getByRole("button", { name: "Apply filters" }).click()
+		await expect(view.getByRole("columnheader", { name: "Delta" })).toBeVisible({
+			timeout: 15_000,
+		})
+		await expect(view.getByRole("cell", { name: "hitRate", exact: true })).toBeVisible()
+	})
+})

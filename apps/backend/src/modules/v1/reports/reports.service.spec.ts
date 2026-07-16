@@ -51,12 +51,20 @@ function chain(rows: unknown[]) {
 	return builder
 }
 
+function evalRunsServiceMock() {
+	return {
+		list: jest.fn().mockResolvedValue([]),
+		currentBaseline: jest.fn().mockResolvedValue(null),
+		compare: jest.fn(),
+	}
+}
+
 describe("ReportsService (RP-1 framework)", () => {
 	let service: ReportsService
 
 	beforeEach(() => {
 		jest.clearAllMocks()
-		service = new ReportsService()
+		service = new ReportsService(evalRunsServiceMock() as never)
 	})
 
 	it("lists the audit-trail report definition with filters and columns", () => {

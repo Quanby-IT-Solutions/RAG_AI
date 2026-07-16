@@ -3,7 +3,8 @@ import { ORPCError } from "@orpc/server"
 
 import type { ReportDefinition, ReportExport, ReportResult } from "@repo/contracts"
 
-import { REPORTS } from "./report-definitions"
+import { EvalRunsService } from "../eval/eval-runs.service"
+import { buildReports, type ReportImpl } from "./report-definitions"
 
 const EXPORT_ROW_CAP = 10_000
 
@@ -25,12 +26,18 @@ function toCsv(columns: { key: string; label: string }[], rows: Record<string, u
 /** RP-1 framework: run/export any registered report (RP-2..5 plug in). */
 @Injectable()
 export class ReportsService {
+	private readonly reports: Record<string, ReportImpl>
+
+	constructor(evalRunsService: EvalRunsService) {
+		this.reports = buildReports({ evalRunsService })
+	}
+
 	list(): ReportDefinition[] {
-		return Object.values(REPORTS).map(report => report.definition)
+		return Object.values(this.reports).map(report => report.definition)
 	}
 
 	private report(key: string) {
-		const report = REPORTS[key]
+		const report = this.reports[key]
 		if (!report) {
 			throw new ORPCError("NOT_FOUND", { message: `Unknown report ${key}` })
 		}
@@ -44,8 +51,15 @@ export class ReportsService {
 		pageSize: number
 	): Promise<ReportResult> {
 		const report = this.report(key)
-		const { rows, total } = await report.run(filters, page, pageSize)
-		return { key, columns: report.definition.columns, rows, total, page, pageSize }
+		const { rows, total, columns } = await report.run(filters, page, pageSize)
+		return {
+			key,
+			columns: columns ?? report.definition.columns,
+			rows,
+			total,
+			page,
+			pageSize,
+		}
 	}
 
 	/** JSON/CSV exports match the filtered view (Excel/PDF land in RP-6). */
@@ -55,7 +69,7 @@ export class ReportsService {
 		format: "json" | "csv"
 	): Promise<ReportExport> {
 		const report = this.report(key)
-		const { rows } = await report.run(filters, 1, EXPORT_ROW_CAP)
+		const { rows, columns } = await report.run(filters, 1, EXPORT_ROW_CAP)
 		const stamp = new Date().toISOString().slice(0, 10)
 		if (format === "json") {
 			return {
@@ -67,7 +81,10 @@ export class ReportsService {
 		return {
 			filename: `${key}-${stamp}.csv`,
 			contentType: "text/csv",
-			content: toCsv(report.definition.columns, rows as Record<string, unknown>[]),
+			content: toCsv(
+				columns ?? report.definition.columns,
+				rows as Record<string, unknown>[]
+			),
 		}
 	}
 }

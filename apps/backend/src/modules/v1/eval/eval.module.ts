@@ -12,5 +12,7 @@ import { EvalController } from "./eval.controller"
 	imports: [RbacModule, AuditModule],
 	controllers: [EvalController],
 	providers: [EvalGoldenService, EvalRunsService, RagGatewayService],
+	// RP-3's quality report reads runs/baseline through this service.
+	exports: [EvalRunsService],
 })
 export class EvalModule {}
