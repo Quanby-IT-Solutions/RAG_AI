@@ -358,6 +358,57 @@ export class RagGatewayService {
 		})
 	}
 
+	/**
+	 * CE-8: fetch a stored page image (binary) from
+	 * GET {RAG_SERVICE_URL}/internal/page-images/{id}. Returns the bytes +
+	 * content type for the controller to stream to the browser.
+	 */
+	async fetchPageImage(input: {
+		imageId: string
+		userId: string
+		permissions: readonly string[]
+		requestId: string
+		traceId: string
+	}): Promise<{ body: Buffer; contentType: string }> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: input.permissions,
+			requestId: input.requestId,
+			traceId: input.traceId,
+		})
+		let response: Response
+		try {
+			response = await fetch(
+				`${env.RAG_SERVICE_URL}/internal/page-images/${encodeURIComponent(input.imageId)}`,
+				{
+					method: "GET",
+					headers: {
+						authorization: `Bearer ${token}`,
+						"x-request-id": input.requestId,
+					},
+					signal: AbortSignal.timeout(env.RAG_SERVICE_TIMEOUT_MS),
+				}
+			)
+		} catch (error) {
+			if ((error as { name?: string } | null)?.name === "TimeoutError") {
+				throw new GatewayTimeoutException(
+					`RAG service did not respond within ${env.RAG_SERVICE_TIMEOUT_MS}ms`
+				)
+			}
+			throw new BadGatewayException("RAG service is unreachable")
+		}
+		if (!response.ok) {
+			if (response.status >= 400 && response.status < 500) {
+				throw new HttpException("Page image not found", response.status)
+			}
+			throw new BadGatewayException("RAG page-image fetch failed")
+		}
+		return {
+			body: Buffer.from(await response.arrayBuffer()),
+			contentType: response.headers.get("content-type") ?? "image/png",
+		}
+	}
+
 	/** Shared transport: hard timeout + uniform error mapping. */
 	private async forward(
 		path: string,

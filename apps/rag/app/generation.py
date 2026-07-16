@@ -165,6 +165,8 @@ class GenerationService:
         compressor: "Compressor | None" = None,
         response_cache: "ResponseCache | None" = None,
         agentic: Any = None,
+        vision_client: Any = None,
+        page_images: Any = None,
     ) -> None:
         self._settings = settings
         self._retrieval = retrieval
@@ -182,12 +184,19 @@ class GenerationService:
         # single-shot retrieve INSIDE the cache-miss branch only; None keeps
         # the linear path byte-identical.
         self._agentic = agentic
+        # CE-8: vision-capable client + image store (None when MULTIMODAL is
+        # off — the generation path is byte-identical). Vision cost is only
+        # ever spent when image-modality chunks actually reach the prompt.
+        self._vision_client = vision_client
+        self._page_images = page_images
 
     async def _build_citations(
         self, answer: str, chunks: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """Resolve each cited context block -> {chunkId, documentId, source,
-        page, section} using the chunk metadata + documents.source_uri."""
+        page, section} using the chunk metadata + documents.source_uri.
+        CE-8: caption chunks additionally carry imageId/modality so the
+        client can open the page image the answer actually read."""
         positions = _cited_positions(answer, len(chunks))
         if not positions:
             return []
@@ -207,6 +216,11 @@ class GenerationService:
                     "source": sources.get(chunk["document_id"]),
                     "page": metadata.get("page"),
                     "section": metadata.get("section"),
+                    **(
+                        {"modality": "image", "imageId": metadata.get("imageId")}
+                        if metadata.get("modality") == "image"
+                        else {}
+                    ),
                 }
             )
         return citations
@@ -334,6 +348,44 @@ class GenerationService:
         if inspect.isawaitable(routed):
             routed = await routed
         return routed
+
+    def _image_chunk_ids(self, used_chunks: list[dict[str, Any]]) -> list[str]:
+        """CE-8: image ids behind the USED image-modality chunks, capped at
+        VISION_MAX_IMAGES (cost bound)."""
+        ids: list[str] = []
+        for chunk in used_chunks:
+            metadata = chunk.get("metadata") or {}
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("modality") == "image"
+                and metadata.get("imageId")
+            ):
+                ids.append(metadata["imageId"])
+        return ids[: self._settings.vision_max_images]
+
+    async def _vision_messages(
+        self, messages: list[dict[str, Any]], image_ids: list[str]
+    ) -> list[dict[str, Any]] | None:
+        """Grounded messages with the page images attached as content parts.
+        None when the images can't be fetched (caller falls back to the text
+        path — the captions are already in the prompt as chunk content)."""
+        from app.multimodal import PageImagesRepository, image_message
+
+        repository = self._page_images or PageImagesRepository(self._settings)
+        rows = await repository.fetch_bytes(image_ids)
+        if not rows:
+            return None
+        parts: list[dict[str, Any]] = [
+            {"type": "text", "text": messages[-1]["content"]}
+        ]
+        for image_id in image_ids:
+            row = rows.get(image_id)
+            if row is None:
+                continue
+            parts.extend(
+                image_message(row["mime_type"], row["image"], f"Page {row['page']} image:")
+            )
+        return [*messages[:-1], {"role": "user", "content": parts}]
 
     def _strict_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         """CE-4: the regeneration prompt = original messages with the strict
@@ -645,24 +697,65 @@ class GenerationService:
         token_usage: dict[str, int] | None = None
         cost_usd: float | None = None
         degraded = False
+        vision_marker: dict[str, Any] | None = None
+        vision_answered = False
         if not used_chunks:
             # Alternate B1: nothing retrieved (or nothing fits the budget) ->
             # grounded refusal, model not called, NO invented citations.
             answer_text = I_DONT_KNOW_ANSWER
             citations: list[dict[str, Any]] = []
         else:
-            try:
-                async with stage(
-                    "model.call", model=client.model, provider=client.provider
-                ) as record:
-                    answer_text, token_usage = await client.complete(prep["messages"])
-                    cost_usd = compute_cost_usd(
-                        self._settings, model=client.model, token_usage=token_usage
+            # ── CE-8 vision branch: image-modality chunks in the budgeted
+            # context attach their page images to a vision-capable call. A
+            # vision failure falls through to the GN-4/GN-5-managed text
+            # path — the captions already ground the answer (degraded marker).
+            image_ids = (
+                self._image_chunk_ids(used_chunks)
+                if self._settings.multimodal_enabled and self._vision_client is not None
+                else []
+            )
+            if image_ids:
+                try:
+                    vision_messages = await self._vision_messages(
+                        prep["messages"], image_ids
                     )
-                    record(tokenUsage=token_usage, costUsd=cost_usd)
-                    from app.metrics import observe_tokens
+                    if vision_messages is not None:
+                        async with stage(
+                            "model.vision_call",
+                            model=self._vision_client.model,
+                            images=len(image_ids),
+                        ) as record:
+                            answer_text, token_usage = await self._vision_client.complete(
+                                vision_messages
+                            )
+                            cost_usd = compute_cost_usd(
+                                self._settings,
+                                model=self._vision_client.model,
+                                token_usage=token_usage,
+                            )
+                            record(tokenUsage=token_usage, costUsd=cost_usd)
+                        vision_marker = {
+                            "images": len(image_ids),
+                            "model": self._vision_client.model,
+                            "degraded": False,
+                        }
+                        vision_answered = True
+                except Exception:
+                    logger.warning("chat.vision_degraded", exc_info=True)
+                    vision_marker = {"images": len(image_ids), "degraded": True}
+            try:
+                if not vision_answered:
+                    async with stage(
+                        "model.call", model=client.model, provider=client.provider
+                    ) as record:
+                        answer_text, token_usage = await client.complete(prep["messages"])
+                        cost_usd = compute_cost_usd(
+                            self._settings, model=client.model, token_usage=token_usage
+                        )
+                        record(tokenUsage=token_usage, costUsd=cost_usd)
+                from app.metrics import observe_tokens
 
-                    observe_tokens(token_usage)
+                observe_tokens(token_usage)
             except Exception as exc:
                 # Alternate B2: provider error/timeout -> bounded degradation,
                 # no silent failure; the trace records the failure path.
@@ -721,6 +814,11 @@ class GenerationService:
 
         # Flow B step 7: persist the turn (NEW conversation per request, R1
         # single-turn) — user + assistant rows written atomically.
+        model_used = (
+            self._vision_client.model
+            if vision_answered and self._vision_client is not None
+            else client.model
+        )
         conversation_id, message_id = await self._repository.persist_turn(
             user_id=principal.sub,
             query=query,
@@ -730,7 +828,7 @@ class GenerationService:
             used_chunks=used_record,
             token_usage=token_usage,
             trace_id=trace_id,
-            model_used=client.model,
+            model_used=model_used,
             conversation_id=conversation_id,
         )
 
@@ -782,6 +880,8 @@ class GenerationService:
                     if grounding
                     else {}
                 ),
+                # CE-8: vision usage only when image chunks were in play.
+                **({"vision": vision_marker} if vision_marker else {}),
             },
         )
 
@@ -797,7 +897,7 @@ class GenerationService:
             "conversationId": conversation_id,
             "messageId": message_id,
             "traceId": trace_id,
-            "model": client.model,
+            "model": model_used,
             "tokenUsage": token_usage,
             "isIDontKnow": is_i_dont_know,
             "degraded": degraded,
@@ -921,6 +1021,37 @@ class GenerationService:
         degraded = False
         ttft_ms: float | None = None
 
+        # ── CE-8 vision branch (streaming): image-modality chunks attach
+        # their page images and the vision client streams instead. Attach
+        # failure falls back to the text stream (captions still ground it);
+        # a MID-stream vision failure follows the existing GN-3 degraded
+        # final-frame contract like any provider.
+        stream_client = client
+        stream_messages = prep["messages"]
+        vision_marker: dict[str, Any] | None = None
+        if (
+            used_chunks
+            and self._settings.multimodal_enabled
+            and self._vision_client is not None
+        ):
+            image_ids = self._image_chunk_ids(used_chunks)
+            if image_ids:
+                try:
+                    vision_messages = await self._vision_messages(
+                        prep["messages"], image_ids
+                    )
+                    if vision_messages is not None:
+                        stream_client = self._vision_client
+                        stream_messages = vision_messages
+                        vision_marker = {
+                            "images": len(image_ids),
+                            "model": self._vision_client.model,
+                            "degraded": False,
+                        }
+                except Exception:
+                    logger.warning("chat.vision_degraded", exc_info=True)
+                    vision_marker = {"images": len(image_ids), "degraded": True}
+
         if not used_chunks:
             # Alternate B1: grounded refusal — streamed as one token event so
             # clients render it like any other answer.
@@ -934,7 +1065,7 @@ class GenerationService:
                 # aborts the completion — no orphaned spend).
                 from contextlib import aclosing
 
-                async with aclosing(client.stream(prep["messages"])) as stream:
+                async with aclosing(stream_client.stream(stream_messages)) as stream:
                     async for item in stream:
                         if isinstance(item, tuple):  # ("__usage__", usage) sentinel
                             token_usage = item[1]
@@ -943,7 +1074,7 @@ class GenerationService:
                             ttft_ms = round((time.perf_counter() - started) * 1000, 3)
                             logger.info(
                                 "chat.stream_ttft %s",
-                                json.dumps({"ttftMs": ttft_ms, "model": client.model}),
+                                json.dumps({"ttftMs": ttft_ms, "model": stream_client.model}),
                             )
                             from app.metrics import CHAT_TTFT
 
@@ -953,13 +1084,13 @@ class GenerationService:
                 answer_text = "".join(parts).strip()
                 if not answer_text:
                     raise RuntimeError(
-                        f"Provider returned an empty stream (model={client.model})"
+                        f"Provider returned an empty stream (model={stream_client.model})"
                     )
             except Exception as exc:
                 # Alternate B2 mid-stream: bounded degradation on the final
                 # frame; the trace records the failure path.
                 logger.warning(
-                    "chat.stream_degraded model=%s reason=%s", client.model, exc
+                    "chat.stream_degraded model=%s reason=%s", stream_client.model, exc
                 )
                 answer_text = DEGRADED_ANSWER
                 degraded = True
@@ -1046,7 +1177,7 @@ class GenerationService:
             used_chunks=prep["used_record"],
             token_usage=token_usage,
             trace_id=trace_id,
-            model_used=client.model,
+            model_used=stream_client.model,
             conversation_id=conversation_id,
         )
 
@@ -1083,8 +1214,8 @@ class GenerationService:
             before=None,
             after={
                 "messageId": message_id,
-                "model": client.model,
-                "provider": client.provider,
+                "model": stream_client.model,
+                "provider": stream_client.provider,
                 "routing": {"tier": routing["tier"], "reason": routing["reason"]},
                 "retrievedChunkCount": len(prep["chunks"]),
                 "usedChunkCount": len(used_chunks),
@@ -1118,6 +1249,8 @@ class GenerationService:
                     if grounding
                     else {}
                 ),
+                # CE-8: vision usage only when image chunks were in play.
+                **({"vision": vision_marker} if vision_marker else {}),
             },
         )
 
@@ -1136,7 +1269,7 @@ class GenerationService:
                 "conversationId": conversation_id,
                 "messageId": message_id,
                 "traceId": trace_id,
-                "model": client.model,
+                "model": stream_client.model,
                 "tokenUsage": token_usage,
                 "isIDontKnow": is_i_dont_know,
                 "degraded": degraded,
@@ -1219,6 +1352,23 @@ def get_agentic(request: Request, retrieval: RetrievalService) -> Any:
     return AgenticRetriever(settings, retrieval, client)
 
 
+def get_vision(request: Request) -> tuple[Any, Any]:
+    """CE-8 seam: (vision client, page-image store) when MULTIMODAL_ENABLED,
+    else (None, None) — the generation path stays byte-identical."""
+    settings = request.app.state.settings
+    if not settings.multimodal_enabled:
+        return None, None
+    client = getattr(request.app.state, "vision_client", None)
+    if client is None:
+        from app.multimodal import build_vision_client
+
+        client = build_vision_client(settings, bucket=get_provider_bucket(request))
+        request.app.state.vision_client = client
+    from app.multimodal import PageImagesRepository
+
+    return client, PageImagesRepository(settings)
+
+
 def get_compressor(request: Request) -> "Compressor | None":
     """RT-7 seam: config-built compressor (None when COMPRESSION_ENABLED off).
     The embeddings filter reuses the pinned per-app EmbeddingsClient; the LLM
@@ -1245,6 +1395,7 @@ async def chat(
     repository: Annotated[ConversationsRepository, Depends(get_conversations_repository)],
 ) -> dict[str, Any]:
     """Non-streamed JSON mode — preserved for integrators (GN-3 AC)."""
+    vision_client, page_images = get_vision(request)
     service = GenerationService(
         settings=request.app.state.settings,
         retrieval=retrieval,
@@ -1253,6 +1404,8 @@ async def chat(
         compressor=get_compressor(request),
         response_cache=get_response_cache(request),
         agentic=get_agentic(request, retrieval),
+        vision_client=vision_client,
+        page_images=page_images,
     )
     try:
         return await service.answer(
@@ -1290,6 +1443,7 @@ async def chat_stream(
     disconnect cancels the generator, which closes the provider stream."""
     from fastapi.responses import StreamingResponse
 
+    vision_client, page_images = get_vision(request)
     service = GenerationService(
         settings=request.app.state.settings,
         retrieval=retrieval,
@@ -1298,6 +1452,8 @@ async def chat_stream(
         compressor=get_compressor(request),
         response_cache=get_response_cache(request),
         agentic=get_agentic(request, retrieval),
+        vision_client=vision_client,
+        page_images=page_images,
     )
     # Screening (SC-1) and ownership are checked BEFORE the stream starts so
     # a refusal is a clean 400/403/404 response, not a broken SSE stream.

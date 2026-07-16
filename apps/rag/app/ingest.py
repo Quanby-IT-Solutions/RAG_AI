@@ -277,6 +277,26 @@ async def ingest_document(
     )
 
 
+@router.get("/page-images/{image_id}")
+async def get_page_image(
+    image_id: str,
+    request: Request,
+    principal: Annotated[ServicePrincipal, Depends(verify_service_jwt)],
+) -> Any:
+    """CE-8: the stored page image behind an image citation. Service-JWT
+    protected here; the gateway enforces the user-facing corpus permission
+    (Flow E) before proxying."""
+    from fastapi.responses import Response as BytesResponse
+
+    from app.multimodal import PageImagesRepository
+
+    rows = await PageImagesRepository(request.app.state.settings).fetch_bytes([image_id])
+    row = rows.get(image_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Page image not found")
+    return BytesResponse(content=row["image"], media_type=row["mime_type"])
+
+
 @router.post("/jobs/{job_id}/rerun", dependencies=[Depends(rate_limit("rate_limit_ingest"))])
 async def rerun_job(
     job_id: str,

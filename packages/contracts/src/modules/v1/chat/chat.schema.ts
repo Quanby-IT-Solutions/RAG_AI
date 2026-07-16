@@ -16,6 +16,10 @@ export const ChatCitationSchema = z.object({
 	source: z.string().nullable(),
 	page: z.number().int().nullable().optional(),
 	section: z.string().nullable().optional(),
+	// CE-8: caption-chunk citations point at the page image the answer read;
+	// the client opens it via GET /v1/corpus/page-images/{imageId}.
+	modality: z.literal("image").optional(),
+	imageId: z.string().uuid().nullable().optional(),
 })
 
 /** Provider token usage for the turn; null when the model was not called

@@ -1,8 +1,11 @@
 import {
 	BadRequestException,
 	Controller,
+	Get,
+	Param,
 	Post,
 	Req,
+	Res,
 	UploadedFile,
 	UseInterceptors,
 } from "@nestjs/common"
@@ -10,7 +13,7 @@ import { FileInterceptor } from "@nestjs/platform-express"
 import { Implement } from "@orpc/nest"
 import { implement } from "@orpc/server"
 import { Session, type UserSession } from "@thallesp/nestjs-better-auth"
-import type { Request } from "express"
+import type { Request, Response } from "express"
 
 import { RbacService } from "@/common/rbac/rbac.service"
 import { v1 } from "@/config/api-versions.config"
@@ -78,6 +81,34 @@ export class CorpusController {
 			requestId: correlationId,
 			traceId: correlationId,
 		})
+	}
+
+	/**
+	 * CE-8: the stored page image behind an image citation (binary — plain
+	 * Nest route, oRPC is JSON-only). Readable by anyone who can read the
+	 * corpus; RbacGuard fails closed and audits denials (Flow E).
+	 */
+	@Get("v1/corpus/page-images/:id")
+	@RequirePermissions("corpus.documents.read")
+	async getPageImage(
+		@Param("id") id: string,
+		@Session() session: UserSession,
+		@Req() request: Request & { id?: string | number },
+		@Res() response: Response
+	) {
+		const access = await this.rbacService.getUserAccess(session.user.id)
+		const correlationId = String(request.id ?? crypto.randomUUID())
+		const image = await this.ragGatewayService.fetchPageImage({
+			imageId: id,
+			userId: session.user.id,
+			permissions: access.permissions,
+			requestId: correlationId,
+			traceId: correlationId,
+		})
+		response.status(200)
+		response.setHeader("content-type", image.contentType)
+		response.setHeader("cache-control", "private, max-age=300")
+		response.send(image.body)
 	}
 
 	@RequirePermissions("corpus.documents.read")

@@ -102,6 +102,27 @@ entity-anchored question produced a non-degraded graph-arm hit fused into
 the answer with a normal citation; a Neo4j outage mid-query degraded to
 hybrid-only with the trace marker set (and an entire eval ran that way).
 
+## Multimodal (CE-7/CE-8 evidence — CE-9 matrix inputs)
+
+Fixture: a chart-page PDF (`quarterly-revenue.pdf`) whose meaning lives in
+an unlabeled bar chart plus a lone "Q3" page label. Ingestion (flag on)
+detected exactly the chart page, stored one 11 KB PNG, and indexed one
+vision caption chunk (job `102390be`: 1 page, 1 caption, $0.0039 — the
+vision line is its own cost entry, never folded into totals). A rerun cost
+$0.00 (caption cache hit); an identical re-upload no-op'd without
+re-rendering.
+
+Answer path (flag on, live): "which bar is the tallest and what does the
+page label say?" → the vision model answered from the PAGE IMAGE — it read
+the "Q3" label, which exists nowhere in the extracted text as a chart
+label — with an image citation (`modality: "image"`, `imageId`) that the
+web client renders as a "chart/figure" chip opening the page image through
+the authed `GET /v1/corpus/page-images/{id}` endpoint (verified: admin 200,
+a user without `corpus.documents.read` 403 with an audited `rbac.denied`).
+Vision-call failure falls back to caption-grounded text generation with a
+`vision.degraded` audit marker (unit-proven). One visual golden item
+(tagged `ce8-visual`) binds the caption chunk for the CE-9 matrix.
+
 Generation quality on the enriched index (stored eval run `fdfa4a50`,
 `generation=true`): faithfulness 1.0, answer relevancy 1.0, hit rate 1.0
 (11 items). The EV harness's generation path exercises the shared grounded
