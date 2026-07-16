@@ -1,110 +1,28 @@
-# Per-Ticket Implementation Prompt Guide
-
-Use this prompt to run a full implementation pass for one ticket and drive it to PASS.
-
-## Prompt Template
-
-Perform a full implementation pass and make ONE ticket PASS. Read the ticket from [docs/TICKETS.md](docs/TICKETS.md).
-
-TICKET TO IMPLEMENT: `<TICKET_ID>` — `<TICKET_TITLE>`
+Perform a full implementation pass and make ONE ticket PASS. Read the ticket from D:\PROJECTS\BidOps\docs\TICKETS.md.
+TICKET TO IMPLEMENT: `SCORE-2` — Win-rate analytics
 
 Your job is not just to audit the ticket, but to make the codebase comply: implement the missing work, fix defects, validate, and document what was done. Work only on this one ticket.
+WORKFLOW
 
-## Workflow
+Read the ticket from docs\TICKETS.md — find the section for the ticket ID above. Extract: the user story, its enforced permission key, all acceptance criteria (Given/When/Then), in-scope vs out-of-scope, technical notes, the named risky-path Flow if any, and its Dependencies.
+Check dependencies first. The ticket's "Dependencies" line lists tickets that must already exist. If any dependency isn't implemented, stop and tell me — don't build on missing foundation.
+Summary: restate required behavior, affected routes/components/modules, schema/tables, tests.
+Current state: what exists, what's missing, what's incorrect, whether it truly matches the acceptance criteria.
+Implement: root-cause changes (not patches), following existing conventions/architecture. Reuse the shared spine — never re-implement it: writeAudit() (F1), the permission middleware (F2), the Drive helper drive.ts — ensureFolder/ensureFolderPath/moveFolder/sha256 (F3), and notify() (ALERT-1). Respect the DOMAIN-MODEL ownership rules noted in the ticket.
+Validate immediately: relevant unit/integration tests; narrow typecheck/lint/test for the touched area; browser validation for UI (exercise the feature; console + network tab free of errors, warnings, failed requests); server logs clean for BE; accessibility — keyboard nav, focus, labelled inputs, visible error messages, no horizontal overflow on mobile, screen-reader-safe semantics, destructive-action confirmations.
+Prove EVERY acceptance criterion explicitly, including the permission branch where the ticket has one: a user WITH the permission succeeds; a user WITHOUT it gets 403 and the denial is audited — verify both. Confirm any required audit rows actually land in PostgreSQL.
+Verify the risky-path Flow ordering and failure branch if the ticket names one (e.g. Flow 1 decision→Drive sync: DB write → ensureFolderPath → moveFolder → writeAudit, never roll back DB on Drive failure; Flow 2 upload→dedup→read-once; Flow 3 RBAC). Verify idempotency wherever the ticket calls for it.
 
-1. Read the ticket from [docs/TICKETS.md](docs/TICKETS.md) and find the section for the ticket ID.
-2. Extract and use:
-   - User story
-   - Enforced permission key
-   - All acceptance criteria (Given/When/Then)
-   - In-scope and out-of-scope
-   - Technical notes
-   - Named risky-path Flow, if any
-   - Dependencies
-3. Check dependencies first.
-   - If any dependency ticket is not implemented, stop and report it.
-   - Do not build on missing foundation.
-4. Provide a summary of:
-   - Required behavior
-   - Affected routes/components/modules
-   - Schema/tables touched
-   - Tests required
-5. Assess current state:
-   - What exists
-   - What is missing
-   - What is incorrect
-   - Whether behavior truly matches each acceptance criterion
-6. Implement root-cause fixes (not superficial patches), following existing architecture and conventions.
-7. Reuse shared foundations only. Do not re-implement them:
-   - writeAudit() (F1)
-   - Permission middleware (F2)
-   - Drive helper drive.ts: ensureFolder / ensureFolderPath / moveFolder / sha256 (F3)
-   - notify() (ALERT-1)
-8. Respect DOMAIN-MODEL ownership rules documented in the ticket.
-9. Validate immediately after changes:
-   - Relevant unit/integration tests
-   - Narrow lint/typecheck/test on touched areas
-   - Browser validation for UI behavior
-   - Console and network tab with zero errors/warnings/failed requests
-   - Backend logs clean for touched paths
-   - Accessibility checks:
-     - Keyboard navigation
-     - Focus behavior
-     - Labeled inputs
-     - Visible error messages
-     - No horizontal overflow on mobile
-     - Screen-reader-safe semantics
-     - Destructive-action confirmations
-10. Prove every acceptance criterion explicitly, including permission branch when present:
-   - User WITH permission succeeds
-   - User WITHOUT permission receives 403
-   - Denial is audited
-11. Confirm required audit rows are written to PostgreSQL.
-12. Verify risky-path Flow order and failure branch if the ticket defines one.
-   - Example verification patterns:
-     - Flow 1 decision -> Drive sync: DB write -> ensureFolderPath -> moveFolder -> writeAudit, and no DB rollback on Drive failure
-     - Flow 2 upload -> dedup -> read-once
-     - Flow 3 RBAC
-13. Verify idempotency where required by the ticket.
+RULES
 
-## Rules
+"Investigated" is NOT "done." Complete = implementation + validation + verification all finished, with a clean console/logs and every criterion proven.
+Treat ANY console error/warning, failed request, unhandled rejection, or server-log error from the touched area as a defect: root-cause it, fix it, re-check until clean.
+If validation fails, keep fixing THIS ticket until it passes or you're genuinely blocked.
+Don't stop at identifying issues — fix them unless truly blocked. If blocked, document what's blocked, why, what's missing, and the exact next action to unblock.
+For foundation tickets (F1–F3), show me your plan (files to add/change) before you commit, since these establish patterns everything else reuses. Do not commit until I review.
 
-1. Investigated is not done.
-2. Complete means implementation + validation + verification are all finished.
-3. Treat any console warning/error, failed request, unhandled rejection, or server-log error in touched areas as a defect.
-4. Root-cause and fix every defect found, then re-check until clean.
-5. If validation fails, continue fixing this ticket until PASS or genuine blocker.
-6. Do not stop at issue identification; implement fixes unless truly blocked.
-7. If blocked, document:
-   - What is blocked
-   - Why blocked
-   - What is missing
-   - Exact next action to unblock
-8. For foundation tickets F1-F3:
-   - Provide file-level implementation plan before commit
-   - Do not commit until reviewer approval
+OUTPUT
 
-## Output Format
-
-- Status: PASS | PARTIAL | BLOCKED | FAIL
-- Evidence:
-  - Files changed
-  - Tests and commands run
-  - Browser, console, and accessibility state
-  - Permission allow path verified
-  - Permission deny path verified (403 + audited)
-  - Audit rows confirmed in PostgreSQL where required
-  - Explicit reason ticket passes or does not pass
-- Remaining gaps or blockers:
-  - List each gap
-  - Provide exact next action for each
-
-## Usage Example
-
-Perform a full implementation pass and make ONE ticket PASS. Read the ticket from [docs/TICKETS.md](docs/TICKETS.md).
-
-TICKET TO IMPLEMENT: `DOC-2` — Handle amended / supplemental documents
-
-Your job is not just to audit the ticket, but to make the codebase comply: implement the missing work, fix defects, validate, and document what was done. Work only on this one ticket.
-
-Follow all sections in this guide exactly.
+Status: PASS / PARTIAL / BLOCKED / FAIL.
+Evidence: files changed; tests/commands run; browser + console + a11y state; permission allow + deny(403+audit) both verified; audit rows confirmed in PostgreSQL where required; exactly why it passes or doesn't.
+Any remaining gaps or blockers with the next action.
