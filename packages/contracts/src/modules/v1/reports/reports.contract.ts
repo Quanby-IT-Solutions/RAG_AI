@@ -52,17 +52,70 @@ export const ReportResultSchema = z.object({
 	pageSize: z.number().int(),
 })
 
+export const ReportFormatSchema = z.enum(["json", "csv", "xlsx", "pdf"])
+
 export const ExportReportRequestSchema = z.object({
 	key: z.string(),
 	filters: z.record(z.string(), z.string()).default({}),
-	format: z.enum(["json", "csv"]),
+	format: ReportFormatSchema,
 })
 
 export const ReportExportSchema = z.object({
 	filename: z.string(),
 	contentType: z.string(),
-	/** The serialized report body — the client turns it into a download. */
+	/** The serialized report body — the client turns it into a download.
+	 * utf8 for json/csv; base64 for binary formats (xlsx/pdf). */
 	content: z.string(),
+	encoding: z.enum(["utf8", "base64"]).default("utf8"),
+})
+
+const CRON_RE = /^\S+ \S+ \S+ \S+ \S+$/
+
+// ── RP-6: scheduled generation ──────────────────────────────────────────────
+
+export const ReportScheduleSchema = z.object({
+	id: z.string(),
+	reportKey: z.string(),
+	cron: z.string(),
+	filters: z.record(z.string(), z.string()),
+	formats: z.array(ReportFormatSchema),
+	recipients: z.array(z.string()),
+	enabled: z.boolean(),
+	createdBy: z.string(),
+	createdAt: z.coerce.date(),
+	updatedAt: z.coerce.date(),
+	lastRunAt: z.coerce.date().nullable(),
+})
+
+export const CreateReportScheduleSchema = z.object({
+	reportKey: z.string().min(1),
+	cron: z
+		.string()
+		.regex(CRON_RE, "Standard 5-field cron expression required"),
+	filters: z.record(z.string(), z.string()).default({}),
+	formats: z.array(ReportFormatSchema).min(1),
+	recipients: z.array(z.string().email()).default([]),
+	enabled: z.boolean().default(true),
+})
+
+export const UpdateReportScheduleSchema = CreateReportScheduleSchema.partial().extend({
+	id: z.string(),
+})
+
+export const ReportFileSummarySchema = z.object({
+	id: z.string(),
+	scheduleId: z.string().nullable(),
+	reportKey: z.string(),
+	format: ReportFormatSchema,
+	filename: z.string(),
+	contentType: z.string(),
+	generatedBy: z.string(),
+	createdAt: z.coerce.date(),
+})
+
+export const ReportFileSchema = ReportFileSummarySchema.extend({
+	/** base64-encoded body for every format (uniform download path). */
+	contentBase64: z.string(),
 })
 
 /**
@@ -92,11 +145,67 @@ export const reportsContract = {
 			.route({
 				method: "POST",
 				path: "/reports/{key}/export",
-				summary: "Export the filtered report (JSON/CSV; Excel/PDF in RP-6)",
+				summary: "Export the filtered report (JSON/CSV/Excel/PDF)",
 				tags: ["Reports"],
 			})
 			.input(ExportReportRequestSchema)
 			.output(ReportExportSchema),
+	},
+	schedules: {
+		list: oc
+			.route({
+				method: "GET",
+				path: "/reports-schedules",
+				summary: "List report schedules",
+				tags: ["Reports"],
+			})
+			.output(z.array(ReportScheduleSchema)),
+		create: oc
+			.route({
+				method: "POST",
+				path: "/reports-schedules",
+				summary: "Create a report schedule",
+				tags: ["Reports"],
+			})
+			.input(CreateReportScheduleSchema)
+			.output(ReportScheduleSchema),
+		update: oc
+			.route({
+				method: "PATCH",
+				path: "/reports-schedules/{id}",
+				summary: "Update a report schedule",
+				tags: ["Reports"],
+			})
+			.input(UpdateReportScheduleSchema)
+			.output(ReportScheduleSchema),
+		delete: oc
+			.route({
+				method: "DELETE",
+				path: "/reports-schedules/{id}",
+				summary: "Delete a report schedule",
+				tags: ["Reports"],
+			})
+			.input(z.object({ id: z.string() }))
+			.output(z.object({ deleted: z.boolean() })),
+	},
+	files: {
+		list: oc
+			.route({
+				method: "GET",
+				path: "/reports-files",
+				summary: "Generated report files (newest first)",
+				tags: ["Reports"],
+			})
+			.output(z.array(ReportFileSummarySchema)),
+		get: oc
+			.route({
+				method: "GET",
+				path: "/reports-files/{id}",
+				summary: "One generated file with its content",
+				tags: ["Reports"],
+			})
+			.input(z.object({ id: z.string() }))
+			.output(ReportFileSchema),
 	},
 }
 
@@ -106,3 +215,9 @@ export type RunReportRequest = z.infer<typeof RunReportRequestSchema>
 export type ReportResult = z.infer<typeof ReportResultSchema>
 export type ExportReportRequest = z.infer<typeof ExportReportRequestSchema>
 export type ReportExport = z.infer<typeof ReportExportSchema>
+export type ReportFormat = z.infer<typeof ReportFormatSchema>
+export type ReportSchedule = z.infer<typeof ReportScheduleSchema>
+export type CreateReportSchedule = z.infer<typeof CreateReportScheduleSchema>
+export type UpdateReportSchedule = z.infer<typeof UpdateReportScheduleSchema>
+export type ReportFileSummary = z.infer<typeof ReportFileSummarySchema>
+export type ReportFile = z.infer<typeof ReportFileSchema>

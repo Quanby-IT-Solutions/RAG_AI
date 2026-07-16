@@ -1,8 +1,17 @@
 "use client"
 
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import type { ReportDefinition, ReportExport, ReportResult } from "@repo/contracts"
+import type {
+	CreateReportSchedule,
+	ReportDefinition,
+	ReportExport,
+	ReportFile,
+	ReportFileSummary,
+	ReportResult,
+	ReportSchedule,
+	UpdateReportSchedule,
+} from "@repo/contracts"
 
 import { ApiError } from "@/core/lib/api-error"
 import { env } from "@/env"
@@ -53,12 +62,31 @@ export function useRunReportQuery(
 	})
 }
 
+function base64ToBytes(content: string): Uint8Array {
+	const binary = atob(content)
+	const bytes = new Uint8Array(binary.length)
+	for (let index = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index)
+	}
+	return bytes
+}
+
+function downloadFile(filename: string, contentType: string, body: string | Uint8Array) {
+	const blob = new Blob([body as BlobPart], { type: contentType })
+	const url = URL.createObjectURL(blob)
+	const anchor = document.createElement("a")
+	anchor.href = url
+	anchor.download = filename
+	anchor.click()
+	URL.revokeObjectURL(url)
+}
+
 export function useExportReportMutation() {
 	return useMutation({
 		mutationFn: async (input: {
 			key: string
 			filters: Record<string, string>
-			format: "json" | "csv"
+			format: "json" | "csv" | "xlsx" | "pdf"
 		}) => {
 			const response = await fetch(`${API_BASE}/reports/${input.key}/export`, {
 				method: "POST",
@@ -70,13 +98,108 @@ export function useExportReportMutation() {
 			return (await response.json()) as ReportExport
 		},
 		onSuccess: exported => {
-			const blob = new Blob([exported.content], { type: exported.contentType })
-			const url = URL.createObjectURL(blob)
-			const anchor = document.createElement("a")
-			anchor.href = url
-			anchor.download = exported.filename
-			anchor.click()
-			URL.revokeObjectURL(url)
+			// Binary formats (xlsx/pdf) arrive base64-encoded (RP-6).
+			const body =
+				exported.encoding === "base64"
+					? base64ToBytes(exported.content)
+					: exported.content
+			downloadFile(exported.filename, exported.contentType, body)
+		},
+	})
+}
+
+// ── RP-6: schedules + generated files ───────────────────────────────────────
+
+export function isPermissionError(error: unknown): boolean {
+	return error instanceof ApiError && error.status === 403
+}
+
+export function useSchedulesQuery() {
+	return useQuery({
+		queryKey: ["reports", "schedules"] as const,
+		retry: (failureCount, error) => !isPermissionError(error) && failureCount < 3,
+		queryFn: async () => {
+			const response = await fetch(`${API_BASE}/reports-schedules`, {
+				credentials: "include",
+			})
+			if (!response.ok) return parseError(response)
+			return (await response.json()) as ReportSchedule[]
+		},
+	})
+}
+
+export function useCreateScheduleMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: async (input: CreateReportSchedule) => {
+			const response = await fetch(`${API_BASE}/reports-schedules`, {
+				method: "POST",
+				credentials: "include",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(input),
+			})
+			if (!response.ok) return parseError(response)
+			return (await response.json()) as ReportSchedule
+		},
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: ["reports", "schedules"] }),
+	})
+}
+
+export function useUpdateScheduleMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: async (input: UpdateReportSchedule) => {
+			const response = await fetch(`${API_BASE}/reports-schedules/${input.id}`, {
+				method: "PATCH",
+				credentials: "include",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(input),
+			})
+			if (!response.ok) return parseError(response)
+			return (await response.json()) as ReportSchedule
+		},
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: ["reports", "schedules"] }),
+	})
+}
+
+export function useDeleteScheduleMutation() {
+	const queryClient = useQueryClient()
+	return useMutation({
+		mutationFn: async (id: string) => {
+			const response = await fetch(`${API_BASE}/reports-schedules/${id}`, {
+				method: "DELETE",
+				credentials: "include",
+			})
+			if (!response.ok) return parseError(response)
+			return (await response.json()) as { deleted: boolean }
+		},
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: ["reports", "schedules"] }),
+	})
+}
+
+export function useReportFilesQuery() {
+	return useQuery({
+		queryKey: ["reports", "files"] as const,
+		refetchInterval: 30_000,
+		queryFn: async () => {
+			const response = await fetch(`${API_BASE}/reports-files`, { credentials: "include" })
+			if (!response.ok) return parseError(response)
+			return (await response.json()) as ReportFileSummary[]
+		},
+	})
+}
+
+export function useDownloadReportFileMutation() {
+	return useMutation({
+		mutationFn: async (id: string) => {
+			const response = await fetch(`${API_BASE}/reports-files/${id}`, {
+				credentials: "include",
+			})
+			if (!response.ok) return parseError(response)
+			return (await response.json()) as ReportFile
+		},
+		onSuccess: file => {
+			downloadFile(file.filename, file.contentType, base64ToBytes(file.contentBase64))
 		},
 	})
 }

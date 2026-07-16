@@ -289,6 +289,39 @@ export class RagGatewayService {
 		})
 	}
 
+	/** RP-6: render already-computed report rows as xlsx/pdf (openpyxl /
+	 * reportlab live in the Python service; the framework stays here). */
+	async renderReport(input: {
+		title: string
+		columns: { key: string; label: string }[]
+		rows: Record<string, unknown>[]
+		format: string
+		userId: string
+		requestId: string
+	}): Promise<{ contentBase64: string; contentType: string }> {
+		const token = this.mintServiceToken({
+			sub: input.userId,
+			permissions: [],
+			requestId: input.requestId,
+			traceId: input.requestId,
+		})
+		return (await this.forward("/internal/reports/render", {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+				"x-request-id": input.requestId,
+			},
+			body: JSON.stringify({
+				title: input.title,
+				columns: input.columns,
+				rows: input.rows,
+				format: input.format,
+			}),
+			failureMessage: "Report rendering failed",
+		})) as { contentBase64: string; contentType: string }
+	}
+
 	/** IN-8 (Flow D): re-embed lifecycle forwards. */
 	async reembed(input: {
 		action: "start" | "status" | "cutover" | "abort"

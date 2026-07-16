@@ -721,3 +721,45 @@ test.describe("ingestion status report (RP-5)", () => {
 		})
 	})
 })
+
+test.describe("report exports & schedules (RP-6)", () => {
+	test("exports xlsx/pdf on demand and manages a schedule end to end", async ({
+		page,
+	}, testInfo) => {
+		await page.goto("/reports")
+		const view = page.getByTestId("reports-view")
+		await expect(view).toBeVisible({ timeout: 15_000 })
+
+		// Excel + PDF exports download real files with the report data.
+		for (const format of ["XLSX", "PDF"] as const) {
+			const downloadPromise = page.waitForEvent("download", { timeout: 30_000 })
+			await view.getByRole("button", { name: `Export ${format}` }).click()
+			const download = await downloadPromise
+			expect(download.suggestedFilename()).toMatch(
+				new RegExp(`\.${format.toLowerCase()}$`)
+			)
+		}
+
+		// Schedule CRUD console (reports.schedules.manage).
+		const panel = page.getByTestId("schedules-panel")
+		await expect(panel).toBeVisible({ timeout: 15_000 })
+		const form = panel.getByRole("form", { name: "Create schedule" })
+		const cronMinute = (10 + (testInfo.workerIndex % 40)).toString()
+		await form.getByLabel("Cron").fill(`${cronMinute} 3 * * *`)
+		await form.getByRole("button", { name: "xlsx", exact: true }).click()
+		await form.getByRole("button", { name: "Add schedule" }).click()
+
+		const row = panel.getByRole("row").filter({ hasText: `${cronMinute} 3 * * *` })
+		await expect(row).toBeVisible({ timeout: 15_000 })
+		await expect(row.getByText("enabled")).toBeVisible()
+
+		await row.getByRole("button", { name: "Pause" }).click()
+		await expect(row.getByText("paused")).toBeVisible({ timeout: 15_000 })
+
+		await row.getByRole("button", { name: "Delete" }).click()
+		await expect(row).toHaveCount(0, { timeout: 15_000 })
+
+		// Generated-files console lists worker artifacts with download.
+		await expect(page.getByTestId("report-files-panel")).toBeVisible()
+	})
+})

@@ -1,10 +1,16 @@
 import { Injectable } from "@nestjs/common"
 import { ORPCError } from "@orpc/server"
 
-import type { ReportDefinition, ReportExport, ReportResult } from "@repo/contracts"
+import type {
+	ReportDefinition,
+	ReportExport,
+	ReportFormat,
+	ReportResult,
+} from "@repo/contracts"
 
 import { env } from "@/config/env.config"
 
+import { RagGatewayService } from "../corpus/rag-gateway.service"
 import { EvalRunsService } from "../eval/eval-runs.service"
 import { buildReports, makePromQueryRange, type ReportImpl } from "./report-definitions"
 
@@ -30,7 +36,10 @@ function toCsv(columns: { key: string; label: string }[], rows: Record<string, u
 export class ReportsService {
 	private readonly reports: Record<string, ReportImpl>
 
-	constructor(evalRunsService: EvalRunsService) {
+	constructor(
+		evalRunsService: EvalRunsService,
+		private readonly ragGatewayService: RagGatewayService
+	) {
 		this.reports = buildReports({
 			evalRunsService,
 			promQueryRange: makePromQueryRange(env.PROMETHEUS_URL),
@@ -67,29 +76,57 @@ export class ReportsService {
 		}
 	}
 
-	/** JSON/CSV exports match the filtered view (Excel/PDF land in RP-6). */
+	/** Everything the export/schedule paths need to serialize a report. */
+	async fullRun(key: string, filters: Record<string, string>) {
+		const report = this.report(key)
+		const { rows, columns } = await report.run(filters, 1, EXPORT_ROW_CAP)
+		return {
+			title: report.definition.title,
+			columns: columns ?? report.definition.columns,
+			rows: rows as Record<string, unknown>[],
+		}
+	}
+
+	/** All exports match the filtered view: JSON/CSV serialize here; Excel and
+	 * PDF render in the Python service (openpyxl/reportlab — RP-6). */
 	async export(
 		key: string,
 		filters: Record<string, string>,
-		format: "json" | "csv"
+		format: ReportFormat,
+		context: { userId: string; requestId: string }
 	): Promise<ReportExport> {
-		const report = this.report(key)
-		const { rows, columns } = await report.run(filters, 1, EXPORT_ROW_CAP)
+		const { title, columns, rows } = await this.fullRun(key, filters)
 		const stamp = new Date().toISOString().slice(0, 10)
+		const filename = `${key}-${stamp}.${format}`
 		if (format === "json") {
 			return {
-				filename: `${key}-${stamp}.json`,
+				filename,
 				contentType: "application/json",
 				content: JSON.stringify(rows, null, 2),
+				encoding: "utf8",
 			}
 		}
+		if (format === "csv") {
+			return {
+				filename,
+				contentType: "text/csv",
+				content: toCsv(columns, rows),
+				encoding: "utf8",
+			}
+		}
+		const rendered = await this.ragGatewayService.renderReport({
+			title,
+			columns,
+			rows,
+			format,
+			userId: context.userId,
+			requestId: context.requestId,
+		})
 		return {
-			filename: `${key}-${stamp}.csv`,
-			contentType: "text/csv",
-			content: toCsv(
-				columns ?? report.definition.columns,
-				rows as Record<string, unknown>[]
-			),
+			filename,
+			contentType: rendered.contentType,
+			content: rendered.contentBase64,
+			encoding: "base64",
 		}
 	}
 }

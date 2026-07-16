@@ -25,6 +25,7 @@ from app.embeddings import EmbeddingsClient
 from app.indexing import index_document_content
 from app.jobs import JobsRepository
 from app.reembed import ReembedRepository, process_reembed_migration
+from app.report_scheduler import process_report_schedules
 from app.tracing import init_tracing, shutdown_tracing, traced
 
 logger = logging.getLogger(__name__)
@@ -180,8 +181,13 @@ class WorkerSettings:
     """`arq app.worker.WorkerSettings` — the worker process entrypoint."""
 
     functions = [process_ingestion_job, process_reembed_migration]
-    # CH-3 retention purge, nightly at 03:10 (worker-local time).
-    cron_jobs = [cron(purge_expired_conversations, hour=3, minute=10)]
+    cron_jobs = [
+        # CH-3 retention purge, nightly at 03:10 (worker-local time).
+        cron(purge_expired_conversations, hour=3, minute=10),
+        # RP-6: check for due report schedules once a minute (second=0 is the
+        # arq default, so this fires at every minute boundary).
+        cron(process_report_schedules, max_tries=1),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

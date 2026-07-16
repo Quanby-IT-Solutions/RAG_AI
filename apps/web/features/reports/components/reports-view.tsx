@@ -34,6 +34,7 @@ import {
 	useReportsListQuery,
 	useRunReportQuery,
 } from "@/features/reports/api/reports.hooks"
+import { SchedulesPanel } from "@/features/reports/components/schedules-panel"
 
 const PAGE_SIZE = 25
 
@@ -200,38 +201,25 @@ export function ReportsView() {
 						</SelectContent>
 					</Select>
 				</div>
-				{definition ? (
-					<>
-						<Button
-							type="button"
-							variant="outline"
-							disabled={exportReport.isPending}
-							onClick={() =>
-								exportReport.mutate({
-									key: definition.key,
-									filters: appliedFilters,
-									format: "csv",
-								})
-							}
-						>
-							Export CSV
-						</Button>
-						<Button
-							type="button"
-							variant="outline"
-							disabled={exportReport.isPending}
-							onClick={() =>
-								exportReport.mutate({
-									key: definition.key,
-									filters: appliedFilters,
-									format: "json",
-								})
-							}
-						>
-							Export JSON
-						</Button>
-					</>
-				) : null}
+				{definition
+					? (["csv", "json", "xlsx", "pdf"] as const).map(format => (
+							<Button
+								key={format}
+								type="button"
+								variant="outline"
+								disabled={exportReport.isPending}
+								onClick={() =>
+									exportReport.mutate({
+										key: definition.key,
+										filters: appliedFilters,
+										format,
+									})
+								}
+							>
+								Export {format.toUpperCase()}
+							</Button>
+						))
+					: null}
 			</div>
 
 			{definition ? (
@@ -352,6 +340,8 @@ export function ReportsView() {
 			) : (
 				<p className="text-muted-foreground text-sm">No reports available.</p>
 			)}
+
+			<SchedulesPanel definitions={definitions ?? []} />
 		</div>
 	)
 }

@@ -55,6 +55,8 @@ function chain(rows: unknown[]) {
 	return builder
 }
 
+const EXPORT_CTX = { userId: "u1", requestId: "r1" }
+
 function evalRunsServiceMock() {
 	return {
 		list: jest.fn().mockResolvedValue([]),
@@ -68,7 +70,7 @@ describe("ReportsService (RP-1 framework)", () => {
 
 	beforeEach(() => {
 		jest.clearAllMocks()
-		service = new ReportsService(evalRunsServiceMock() as never)
+		service = new ReportsService(evalRunsServiceMock() as never, {} as never)
 	})
 
 	it("lists the audit-trail report definition with filters and columns", () => {
@@ -83,7 +85,7 @@ describe("ReportsService (RP-1 framework)", () => {
 
 	it("rejects unknown report keys with NOT_FOUND", async () => {
 		await expect(service.run("nope", {}, 1, 50)).rejects.toMatchObject({ code: "NOT_FOUND" })
-		await expect(service.export("nope", {}, "csv")).rejects.toMatchObject({
+		await expect(service.export("nope", {}, "csv", EXPORT_CTX)).rejects.toMatchObject({
 			code: "NOT_FOUND",
 		})
 	})
@@ -122,7 +124,7 @@ describe("ReportsService (RP-1 framework)", () => {
 			.mockReturnValueOnce(chain([{ total: 1 }]))
 			.mockReturnValueOnce(chain([auditRow()]))
 
-		const exported = await service.export("audit-trail", { actorId: "user-1" }, "json")
+		const exported = await service.export("audit-trail", { actorId: "user-1" }, "json", EXPORT_CTX)
 
 		expect(exported.contentType).toBe("application/json")
 		expect(exported.filename).toMatch(/^audit-trail-\d{4}-\d{2}-\d{2}\.json$/)
@@ -141,7 +143,7 @@ describe("ReportsService (RP-1 framework)", () => {
 				])
 			)
 
-		const exported = await service.export("audit-trail", {}, "csv")
+		const exported = await service.export("audit-trail", {}, "csv", EXPORT_CTX)
 
 		expect(exported.contentType).toBe("text/csv")
 		const lines = exported.content.split("\n")

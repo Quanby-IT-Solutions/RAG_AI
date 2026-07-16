@@ -168,6 +168,12 @@ export {
 	ReportExportSchema,
 	RunReportRequestSchema,
 	ExportReportRequestSchema,
+	ReportFormatSchema,
+	ReportScheduleSchema,
+	CreateReportScheduleSchema,
+	UpdateReportScheduleSchema,
+	ReportFileSummarySchema,
+	ReportFileSchema,
 } from "./modules/v1/reports/reports.contract.js"
 export type {
 	ReportDefinition,
@@ -176,6 +182,12 @@ export type {
 	ReportExport,
 	RunReportRequest,
 	ExportReportRequest,
+	ReportFormat,
+	ReportSchedule,
+	CreateReportSchedule,
+	UpdateReportSchedule,
+	ReportFileSummary,
+	ReportFile,
 } from "./modules/v1/reports/reports.contract.js"
 
 // Current-user access schemas

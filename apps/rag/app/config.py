@@ -83,6 +83,12 @@ class Settings(BaseSettings):
         alias="ROUTING_MIN_TOP_SIMILARITY", default=0.2, ge=0, le=1
     )
 
+    # --- Scheduled reports (RP-6) — the arq worker calls the backend's
+    # internal report-run endpoint with a service JWT to fetch report rows ---
+    backend_internal_url: str = Field(
+        alias="BACKEND_INTERNAL_URL", default="http://localhost:3000/api"
+    )
+
     # --- Chat history (CH-3) — retention window for the purge job ---
     chat_retention_days: int = Field(alias="CHAT_RETENTION_DAYS", default=365, ge=1)
 

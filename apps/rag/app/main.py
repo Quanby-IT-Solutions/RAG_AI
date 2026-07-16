@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 
-from app import evaluation, generation, ingest, reembed, retrieval
+from app import evaluation, generation, ingest, reembed, report_render, retrieval
 from app import health as health_checks
 from app.config import Settings, get_settings
 from app.documents import DocumentsRepository
@@ -93,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(retrieval.router)
     app.include_router(evaluation.router)
     app.include_router(reembed.router)
+    app.include_router(report_render.router)
 
     # OB-2: request-id + latency + HTTP counters + JSON access log.
     app.add_middleware(app_middleware)

@@ -588,6 +588,54 @@ export const reembedMigrations = createTable(
 // ============================================================================
 // RELATIONS
 // ============================================================================
+
+/**
+ * RP-6: scheduled report generation. Schedules are managed through the
+ * backend console (reports.schedules.manage, audited); the arq worker polls
+ * for due schedules every minute and generates the files.
+ */
+export const reportSchedules = createTable(
+	"report_schedules",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		reportKey: t.text("report_key").notNull(),
+		/** Standard 5-field cron expression. */
+		cron: t.text("cron").notNull(),
+		filters: t.jsonb("filters").$type<Record<string, string>>().notNull().default({}),
+		/** Any of json | csv | xlsx | pdf. */
+		formats: t.jsonb("formats").$type<string[]>().notNull(),
+		/** Email recipients (delivery when SMTP is configured); files are
+		 * always stored in report_files regardless. */
+		recipients: t.jsonb("recipients").$type<string[]>().notNull().default([]),
+		enabled: t.boolean("enabled").notNull().default(true),
+		createdBy: t.text("created_by").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: t.timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+		lastRunAt: t.timestamp("last_run_at", { withTimezone: true }),
+	}),
+	t => [index("report_schedules_enabled_idx").on(t.enabled)]
+)
+
+/** RP-6: generated report artifacts (scheduled or retained on-demand). */
+export const reportFiles = createTable(
+	"report_files",
+	t => ({
+		id: t.uuid("id").primaryKey().defaultRandom(),
+		scheduleId: t.uuid("schedule_id").references(() => reportSchedules.id, {
+			onDelete: "set null",
+		}),
+		reportKey: t.text("report_key").notNull(),
+		format: t.text("format").notNull(),
+		filename: t.text("filename").notNull(),
+		contentType: t.text("content_type").notNull(),
+		/** base64 for binary formats (xlsx/pdf), utf-8 passthrough for json/csv. */
+		contentBase64: t.text("content_base64").notNull(),
+		generatedBy: t.text("generated_by").notNull(),
+		createdAt: t.timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+	}),
+	t => [index("report_files_created_at_idx").on(t.createdAt)]
+)
+
 export const relations = defineRelations(
 	{
 		users,
@@ -690,6 +738,8 @@ export const schema = Object.assign(
 		evalBaselines,
 		embeddingCache,
 		reembedMigrations,
+		reportSchedules,
+		reportFiles,
 	},
 	relations
 )
