@@ -17,6 +17,7 @@ NEW conversation (single-turn R1) with the user/assistant message pair and
 writes ONE RAG-action audit entry attributed to the service-JWT principal.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -67,6 +68,13 @@ DEGRADED_ANSWER = (
 VALIDATION_FAILED_ANSWER = (
     "I generated an answer but it failed output validation, so it was "
     "withheld. Please try asking again."
+)
+
+# CE-4 (Flow H): appended to the system prompt for the ONE regeneration after
+# a failed groundedness check — stricter grounding, honest refusal otherwise.
+_STRICT_GROUNDING_SUFFIX = (
+    " STRICT MODE: Only state facts that appear in the context blocks. If the "
+    "context does not fully support an answer, reply exactly: \"I don't know.\""
 )
 
 
@@ -327,8 +335,37 @@ class GenerationService:
             routed = await routed
         return routed
 
+    def _strict_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """CE-4: the regeneration prompt = original messages with the strict
+        grounding suffix on the system turn."""
+        return [
+            {**m, "content": m["content"] + _STRICT_GROUNDING_SUFFIX}
+            if m["role"] == "system"
+            else m
+            for m in messages
+        ]
+
+    async def _regenerate_strict(
+        self, client: Any, messages: list[dict[str, str]]
+    ) -> tuple[str, dict[str, int] | None] | None:
+        """CE-4: the ONE regeneration attempt; None on any failure (the
+        caller ships the draft — Flow H fail-open)."""
+        try:
+            async with stage("model.regenerate", model=client.model) as record:
+                answer, usage = await client.complete(self._strict_messages(messages))
+                record(tokenUsage=usage)
+                return answer, usage
+        except Exception:
+            logger.warning("chat.regenerate_failed", exc_info=True)
+            return None
+
     async def _prepare(
-        self, *, query: str, k: int | None, filters: dict[str, Any] | None = None
+        self,
+        *,
+        query: str,
+        k: int | None,
+        filters: dict[str, Any] | None = None,
+        on_status: Any = None,
     ) -> dict[str, Any]:
         """Shared Flow B steps 3-5 for both response modes: hybrid retrieve
         (RT-1/RT-2), hard token budget (GN-2, rank-then-select), grounded
@@ -341,7 +378,7 @@ class GenerationService:
         if self._agentic is not None:
             try:
                 chunks, agentic_trace = await self._agentic.retrieve(
-                    query, k=k, filters=filters
+                    query, k=k, filters=filters, on_status=on_status
                 )
             except Exception:
                 logger.warning("agentic.loop_degraded_to_linear", exc_info=True)
@@ -431,6 +468,62 @@ class GenerationService:
         }
 
     @traced(name="rag.chat")
+    async def _grounding_gate(
+        self,
+        *,
+        query: str,
+        answer_text: str,
+        citations: list[dict[str, Any]],
+        used_chunks: list[dict[str, Any]],
+        client: Any,
+        messages: list[dict[str, str]],
+        on_regenerating: Any = None,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        """CE-4 (Flow H second half): groundedness verdict → ONE strict
+        regeneration → re-verdict → honest "I don't know". The checker is an
+        enhancer, never an availability gate: checker/regeneration failures
+        ship the draft with a trace marker. Returns (answer, citations,
+        marker)."""
+        marker: dict[str, Any] = {"grounded": None, "regenerated": False, "outcome": "draft"}
+        verdict = await self._agentic.groundedness_verdict(
+            question=query, answer=answer_text, chunks=used_chunks
+        )
+        if verdict is None:
+            marker["outcome"] = "checker-failed"
+            return answer_text, citations, marker
+        marker["grounded"] = verdict
+        if verdict:
+            return answer_text, citations, marker
+        if on_regenerating is not None:
+            await on_regenerating()
+        marker["regenerated"] = True
+        regenerated = await self._regenerate_strict(client, messages)
+        if regenerated is None:
+            marker["outcome"] = "regenerate-failed-draft-kept"
+            return answer_text, citations, marker
+        answer2, usage2 = regenerated
+        marker["regenTokenUsage"] = usage2
+        if _is_i_dont_know(answer2):
+            marker["outcome"] = "idk"
+            return I_DONT_KNOW_ANSWER, [], marker
+        verdict2 = await self._agentic.groundedness_verdict(
+            question=query, answer=answer2, chunks=used_chunks
+        )
+        if verdict2 is False:
+            # Second failure: NEVER the ungrounded draft (AC).
+            marker["outcome"] = "idk"
+            return I_DONT_KNOW_ANSWER, [], marker
+        citations2 = await self._build_citations(answer2, used_chunks)
+        problems = validate_output(
+            answer2, citations=citations2, chunk_count=len(used_chunks)
+        )
+        if problems:
+            logger.warning("chat.regenerated_validation_failed %s", json.dumps(problems))
+            marker["outcome"] = "idk"
+            return I_DONT_KNOW_ANSWER, [], marker
+        marker["outcome"] = "regenerated"
+        return answer2, citations2, marker
+
     async def answer(
         self,
         *,
@@ -599,6 +692,33 @@ class GenerationService:
                     citations = []
                     degraded = True
 
+        # ── CE-4 groundedness gate (agentic mode only, Flow H second half).
+        grounding: dict[str, Any] | None = None
+        if (
+            self._agentic is not None
+            and used_chunks
+            and not degraded
+            and not _is_i_dont_know(answer_text)
+        ):
+            try:
+                async with stage("grounding.gate") as record:
+                    answer_text, citations, grounding = await self._grounding_gate(
+                        query=query,
+                        answer_text=answer_text,
+                        citations=citations,
+                        used_chunks=used_chunks,
+                        client=client,
+                        messages=prep["messages"],
+                    )
+                    record(
+                        **{k_: grounding[k_] for k_ in ("grounded", "regenerated", "outcome")}
+                    )
+            except Exception:
+                # Flow H: the gate is an enhancer — a broken gate ships the
+                # draft, never an error.
+                logger.warning("chat.grounding_gate_degraded", exc_info=True)
+                grounding = None
+
         # Flow B step 7: persist the turn (NEW conversation per request, R1
         # single-turn) — user + assistant rows written atomically.
         conversation_id, message_id = await self._repository.persist_turn(
@@ -651,8 +771,25 @@ class GenerationService:
                     if prep.get("agentic")
                     else {}
                 ),
+                # CE-4: groundedness outcome only when the gate ran.
+                **(
+                    {
+                        "grounding": {
+                            k_: grounding[k_]
+                            for k_ in ("grounded", "regenerated", "outcome")
+                        }
+                    }
+                    if grounding
+                    else {}
+                ),
             },
         )
+
+        from app.metrics import CHAT_MODE_LATENCY
+
+        CHAT_MODE_LATENCY.labels(
+            mode="agentic" if self._agentic is not None else "linear"
+        ).observe(latency_ms / 1000.0)
 
         payload = {
             "answer": answer_text,
@@ -747,7 +884,33 @@ class GenerationService:
                     yield _sse("final", {**payload, "ttftMs": payload["latencyMs"]})
                     return
 
-        prep = await self._prepare(query=query, k=k, filters=filters)
+        # ── CE-4: in agentic mode, loop-status events stream out WHILE the
+        # retrieve/grade/rewrite loop runs — perceived progress instead of
+        # silence before the first token. Linear mode: SSE contract unchanged.
+        if self._agentic is not None:
+            status_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+            async def on_status(stage_name: str, detail: dict[str, Any]) -> None:
+                status_queue.put_nowait({"stage": stage_name, **detail})
+
+            prep_task = asyncio.create_task(
+                self._prepare(query=query, k=k, filters=filters, on_status=on_status)
+            )
+            while not prep_task.done() or not status_queue.empty():
+                if not status_queue.empty():
+                    yield _sse("status", status_queue.get_nowait())
+                    continue
+                getter = asyncio.create_task(status_queue.get())
+                done, _ = await asyncio.wait(
+                    {prep_task, getter}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if getter in done:
+                    yield _sse("status", getter.result())
+                else:
+                    getter.cancel()
+            prep = await prep_task  # re-raises any _prepare failure
+        else:
+            prep = await self._prepare(query=query, k=k, filters=filters)
         used_chunks = prep["used_chunks"]
 
         # Flow B route stage (GN-4/GN-5): decision recorded before generation.
@@ -816,6 +979,63 @@ class GenerationService:
                 answer_text = VALIDATION_FAILED_ANSWER
                 citations = []
                 degraded = True
+
+        # ── CE-4 groundedness gate before the final flush (agentic only).
+        # Like GN-5 validation, the FINAL frame carries any replacement; a
+        # `regenerating` status explains the pause between stream end and
+        # final (already-streamed deltas cannot be unsent).
+        grounding: dict[str, Any] | None = None
+        if (
+            self._agentic is not None
+            and used_chunks
+            and not degraded
+            and not _is_i_dont_know(answer_text)
+        ):
+            regen_signal: list[bool] = []
+
+            async def on_regenerating() -> None:
+                regen_signal.append(True)
+
+            verdict_started = time.perf_counter()
+            gate_task = asyncio.create_task(
+                self._grounding_gate(
+                    query=query,
+                    answer_text=answer_text,
+                    citations=citations,
+                    used_chunks=used_chunks,
+                    client=client,
+                    messages=prep["messages"],
+                    on_regenerating=on_regenerating,
+                )
+            )
+            emitted_regen = False
+            while not gate_task.done():
+                if regen_signal and not emitted_regen:
+                    emitted_regen = True
+                    yield _sse("status", {"stage": "regenerating"})
+                await asyncio.sleep(0.05)
+            if regen_signal and not emitted_regen:
+                yield _sse("status", {"stage": "regenerating"})
+            try:
+                answer_text, citations, grounding = await gate_task
+                logger.info(
+                    "chat.grounding %s",
+                    json.dumps(
+                        {
+                            **{
+                                k_: grounding[k_]
+                                for k_ in ("grounded", "regenerated", "outcome")
+                            },
+                            "durationMs": round(
+                                (time.perf_counter() - verdict_started) * 1000, 3
+                            ),
+                        }
+                    ),
+                )
+            except Exception:
+                # Flow H: a broken gate ships the streamed draft, never an error.
+                logger.warning("chat.grounding_gate_degraded", exc_info=True)
+                grounding = None
 
         conversation_id, message_id = await self._repository.persist_turn(
             user_id=principal.sub,
@@ -887,8 +1107,25 @@ class GenerationService:
                     if prep.get("agentic")
                     else {}
                 ),
+                # CE-4: groundedness outcome only when the gate ran.
+                **(
+                    {
+                        "grounding": {
+                            k_: grounding[k_]
+                            for k_ in ("grounded", "regenerated", "outcome")
+                        }
+                    }
+                    if grounding
+                    else {}
+                ),
             },
         )
+
+        from app.metrics import CHAT_MODE_LATENCY
+
+        CHAT_MODE_LATENCY.labels(
+            mode="agentic" if self._agentic is not None else "linear"
+        ).observe(latency_ms / 1000.0)
 
         # Final frame: citations + usage + ids (GN-3 contract with CH-2).
         yield _sse(

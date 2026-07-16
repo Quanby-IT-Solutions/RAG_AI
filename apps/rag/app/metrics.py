@@ -43,6 +43,13 @@ CHAT_TTFT = Histogram(
     "rag_chat_ttft_seconds",
     "Time to first streamed token",
 )
+# CE-4: end-to-end chat latency split by pipeline mode so the agentic loop's
+# latency cost is measurable next to linear (rag_chat_ttft_seconds unchanged).
+CHAT_MODE_LATENCY = Histogram(
+    "rag_chat_mode_latency_seconds",
+    "Chat request latency by pipeline mode",
+    ["mode"],
+)
 CHAT_TOKENS = Counter(
     "rag_chat_tokens_total",
     "LLM tokens by kind",

@@ -53,6 +53,14 @@ _REWRITE_SYSTEM_PROMPT = (
     "match how documents phrase it. Reply with ONLY the rewritten question."
 )
 
+# CE-4 groundedness gate (Flow H second half).
+_GROUNDED_SYSTEM_PROMPT = (
+    "You verify that an answer is fully supported by its context. Reply with "
+    'ONLY a JSON object: {"grounded": true/false, "reason": "<short>"}. '
+    "grounded=true only when every factual claim in the answer appears in "
+    "the numbered context blocks."
+)
+
 # Preview length per chunk in the grading prompt — enough to judge topical
 # relevance without spending answer-sized context on the grader.
 _GRADE_PREVIEW_CHARS = 300
@@ -87,17 +95,22 @@ class LoopState(TypedDict, total=False):
     rewrite_failed: bool
 
 
-def _parse_verdict(text: str) -> dict[str, Any] | None:
-    """Extract the grader's JSON verdict; None when unparseable (fail-open)."""
+def _parse_json_flag(text: str, key: str) -> dict[str, Any] | None:
+    """Extract a JSON verdict whose `key` is a bool; None when unparseable
+    (both graders fail open — Flow H)."""
     try:
         start = text.index("{")
         end = text.rindex("}") + 1
         verdict = json.loads(text[start:end])
     except (ValueError, json.JSONDecodeError):
         return None
-    if not isinstance(verdict, dict) or not isinstance(verdict.get("sufficient"), bool):
+    if not isinstance(verdict, dict) or not isinstance(verdict.get(key), bool):
         return None
     return verdict
+
+
+def _parse_verdict(text: str) -> dict[str, Any] | None:
+    return _parse_json_flag(text, "sufficient")
 
 
 class AgenticRetriever:
@@ -113,10 +126,27 @@ class AgenticRetriever:
         self._retrieval = retrieval
         self._client = client
         self._graph = self._build_graph()
+        # CE-4: per-request status callback (instances are per-request — the
+        # generation seam builds one AgenticRetriever per chat call).
+        self._on_status: Any = None
+
+    async def _emit(self, stage_name: str, detail: dict[str, Any] | None = None) -> None:
+        """CE-4: loop-status event for the SSE stream; emission failures never
+        touch the loop itself."""
+        if self._on_status is None:
+            return
+        try:
+            await self._on_status(stage_name, detail or {})
+        except Exception:
+            logger.warning("agentic.status_emit_failed", exc_info=True)
 
     # ------------------------------------------------------------- nodes
     async def _node_retrieve(self, state: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
+        await self._emit(
+            "retrieving",
+            {"rewritten": state["query"] != state["original"]},
+        )
         chunks = await self._retrieval.retrieve(
             state["query"], k=state["k"], filters=state["filters"]
         )
@@ -132,6 +162,7 @@ class AgenticRetriever:
         """Structured relevance verdict; grader failure = sufficient (Flow H
         fall-through: degrade to the linear path over the current set)."""
         started = time.perf_counter()
+        await self._emit("grading", {})
         previews = "\n".join(
             f"[{index + 1}] {chunk['content'][:_GRADE_PREVIEW_CHARS]}"
             for index, chunk in enumerate(state["chunks"])
@@ -170,6 +201,7 @@ class AgenticRetriever:
     async def _node_rewrite(self, state: dict[str, Any]) -> dict[str, Any]:
         """One query rewrite; failure or a non-novel rewrite ends the loop
         with the current chunks (Flow H — never an error)."""
+        await self._emit("rewriting", {})
         graded_out = "\n".join(
             f"- {chunk['content'][:120]}" for chunk in state["chunks"][:5]
         ) or "(nothing retrieved)"
@@ -236,10 +268,13 @@ class AgenticRetriever:
         *,
         k: int | None = None,
         filters: Any = None,
+        on_status: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Run the loop; returns (chunks, loop trace). The trace records each
         hop's query text, verdict, and timing (AC) and lands on the request
-        span + audit record."""
+        span + audit record. `on_status` (CE-4) receives (stage, detail)
+        per loop step for SSE progress events."""
+        self._on_status = on_status
         async with stage("agentic.loop") as record:
             state = await self._graph.ainvoke(
                 {
@@ -267,6 +302,47 @@ class AgenticRetriever:
         AGENTIC_HOPS.observe(len(state["hops"]))
         logger.info("agentic.loop %s", json.dumps(trace))
         return state["chunks"], trace
+
+    async def groundedness_verdict(
+        self,
+        *,
+        question: str,
+        answer: str,
+        chunks: list[dict[str, Any]],
+    ) -> bool | None:
+        """CE-4 groundedness check over the draft + USED chunks. Returns
+        None when the checker itself fails or replies unparseably — the
+        caller ships the draft with a trace marker (fail-open, Flow H: the
+        checker is an enhancer, never an availability gate)."""
+        blocks = "\n".join(
+            f"[{index + 1}] {chunk['content'][:_GRADE_PREVIEW_CHARS * 2]}"
+            for index, chunk in enumerate(chunks)
+        )
+        try:
+            text, _ = await self._client.complete(
+                [
+                    {"role": "system", "content": _GROUNDED_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Question: {question}\n\nContext blocks:\n{blocks}\n\n"
+                            f"Answer to verify:\n{answer}"
+                        ),
+                    },
+                ]
+            )
+        except Exception:
+            logger.warning("agentic.groundedness_check_failed", exc_info=True)
+            AGENTIC_EVENTS.labels(event="groundedness_check_failed").inc()
+            return None
+        verdict = _parse_json_flag(text, "grounded")
+        if verdict is None:
+            AGENTIC_EVENTS.labels(event="groundedness_check_failed").inc()
+            return None
+        AGENTIC_EVENTS.labels(
+            event="grounded" if verdict["grounded"] else "ungrounded"
+        ).inc()
+        return verdict["grounded"]
 
 
 def build_agentic_client(settings: Settings, bucket: Any = None) -> SupportsComplete:

@@ -96,6 +96,44 @@ describe("ChatView", () => {
 		expect(screen.getByRole("button", { name: /send/i })).toBeDisabled()
 	})
 
+	it("renders agentic loop status frames before tokens, then clears them (CE-4)", async () => {
+		let controller!: ReadableStreamDefaultController<Uint8Array>
+		const body = new ReadableStream<Uint8Array>({
+			start(c) {
+				controller = c
+			},
+		})
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				new Response(body, {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				})
+			)
+		)
+		renderChatView()
+		await askQuestion()
+
+		const encoder = new TextEncoder()
+		controller.enqueue(encoder.encode('event: status\ndata: {"stage":"retrieving"}\n\n'))
+		expect(await screen.findByText("Searching the corpus…")).toBeInTheDocument()
+
+		controller.enqueue(encoder.encode('event: status\ndata: {"stage":"regenerating"}\n\n'))
+		expect(await screen.findByText("Improving the answer…")).toBeInTheDocument()
+
+		controller.enqueue(encoder.encode('event: token\ndata: {"delta":"Final answer."}\n\n'))
+		controller.enqueue(
+			encoder.encode(
+				`event: final\ndata: ${JSON.stringify({ ...answerFixture, answer: "Final answer.", citations: [] })}\n\n`
+			)
+		)
+		controller.close()
+
+		expect(await screen.findByText("Final answer.")).toBeInTheDocument()
+		expect(screen.queryByText("Improving the answer…")).not.toBeInTheDocument()
+	})
+
 	it("renders the answer with clickable citations showing source + page/section", async () => {
 		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(streamOf(answerFixture)))
 		renderChatView()

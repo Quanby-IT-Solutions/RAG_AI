@@ -121,9 +121,17 @@ export function useConversationQuery(id: string | null) {
 /** Final SSE frame: the GN-1 answer envelope plus stream timing. */
 export type ChatStreamFinal = ChatAnswer & { ttftMs?: number | null; latencyMs?: number }
 
+/** CE-4: agentic-loop progress frame (linear mode never sends these). */
+export type ChatStreamStatus = {
+	stage: "retrieving" | "grading" | "rewriting" | "regenerating" | (string & {})
+	rewritten?: boolean
+}
+
 export interface ChatStreamHandlers {
 	onToken: (delta: string) => void
 	onFinal: (final: ChatStreamFinal) => void
+	/** Optional CE-4 progress hook — unknown stages should render generically. */
+	onStatus?: (status: ChatStreamStatus) => void
 }
 
 /** Thrown when the SSE connection drops before the final frame — the caller
@@ -185,6 +193,9 @@ export async function streamChatQuery(
 		} else if (event === "final") {
 			sawFinal = true
 			handlers.onFinal(JSON.parse(data) as ChatStreamFinal)
+		} else if (event === "status") {
+			// CE-4: loop progress; ignored unless the caller opts in.
+			handlers.onStatus?.(JSON.parse(data) as ChatStreamStatus)
 		}
 	}
 

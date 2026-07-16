@@ -43,6 +43,8 @@ export function ChatView({
 	const [messages, setMessages] = useState<ChatThreadMessage[]>([])
 	const [input, setInput] = useState("")
 	const [isStreaming, setIsStreaming] = useState(false)
+	// CE-4: agentic-loop progress label (null in linear mode / between steps).
+	const [loopStatus, setLoopStatus] = useState<string | null>(null)
 	// CH-3: once a conversation exists, later sends continue it server-side.
 	const [conversationId, setConversationId] = useState<string | null>(initialConversationId)
 	// RT-4: restrict retrieval to a corpus subset; empty = whole corpus.
@@ -130,10 +132,20 @@ export function ChatView({
 	// honestly: 429 -> countdown banner, provider-unavailable -> degraded
 	// final, dropped connection -> partial answer + retry (never a frozen
 	// spinner).
+	// CE-4: human labels for the agentic loop's SSE status stages; unknown
+	// stages fall back to a generic working label.
+	const statusLabels: Record<string, string> = {
+		retrieving: "Searching the corpus…",
+		grading: "Checking relevance…",
+		rewriting: "Refining the search…",
+		regenerating: "Improving the answer…",
+	}
+
 	async function runQuery(query: string) {
 		setRequestError(null)
 		setRetryQuery(null)
 		setIsStreaming(true)
+		setLoopStatus(null)
 
 		const assistantId = nextId()
 		let started = false
@@ -167,6 +179,7 @@ export function ChatView({
 				{
 					onToken: delta => {
 						ensureBubble()
+						setLoopStatus(null)
 						setMessages(prev =>
 							prev.map(message =>
 								message.id === assistantId && message.role === "assistant"
@@ -177,6 +190,7 @@ export function ChatView({
 					},
 					onFinal: final => {
 						ensureBubble()
+						setLoopStatus(null)
 						setConversationId(final.conversationId)
 						patchMessage(assistantId, {
 							content: final.answer,
@@ -185,6 +199,11 @@ export function ChatView({
 							degraded: final.degraded,
 							streaming: false,
 						})
+					},
+					// CE-4: agentic-loop progress renders in the thinking bubble
+					// (and over a streamed draft while it is being regenerated).
+					onStatus: status => {
+						setLoopStatus(statusLabels[status.stage] ?? "Working…")
 					},
 				}
 			)
@@ -223,6 +242,7 @@ export function ChatView({
 			}
 		} finally {
 			setIsStreaming(false)
+			setLoopStatus(null)
 		}
 	}
 
@@ -282,10 +302,11 @@ export function ChatView({
 							{messages.map(message => (
 								<MessageBubble key={message.id} message={message} />
 							))}
-							{showThinking ? (
+							{showThinking || (isStreaming && loopStatus) ? (
 								<div className="flex justify-start" role="status" aria-label="Waiting for answer">
 									<div className="bg-muted text-muted-foreground max-w-[85%] animate-pulse rounded-lg px-3 py-2 text-sm">
-										Thinking...
+										{/* CE-4: live agentic progress; linear mode keeps Thinking... */}
+										{loopStatus ?? "Thinking..."}
 									</div>
 								</div>
 							) : null}
