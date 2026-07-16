@@ -56,6 +56,9 @@ class FakeChunksRepository:
         # RT-6: parent-swap reads full rows through this seam.
         self.by_ids: dict[str, dict[str, Any]] = {}
         self.by_ids_calls: list[list[str]] = []
+        # CE-6: graph-arm provenance resolution (hash -> chunk row).
+        self.by_hashes: dict[str, dict[str, Any]] = {}
+        self.by_hashes_calls: list[dict[str, Any]] = []
 
     async def search_similar(
         self, *, embedding: list[float], k: int, ef_search: int, filters=None, column="embedding"
@@ -89,6 +92,12 @@ class FakeChunksRepository:
             self.concurrency_probe["keyword_started"].set()
             await self.concurrency_probe["vector_started"].wait()
         return [dict(row) for row in self.keyword_rows[:k]]
+
+    async def fetch_by_hashes(
+        self, hashes: list[str], *, filters=None
+    ) -> dict[str, dict[str, Any]]:
+        self.by_hashes_calls.append({"hashes": hashes, "filters": filters})
+        return {h: dict(self.by_hashes[h]) for h in hashes if h in self.by_hashes}
 
 
 def make_service(

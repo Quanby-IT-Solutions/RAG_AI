@@ -315,6 +315,42 @@ class GraphRepository:
             await session.run("MATCH (e:Entity) WHERE NOT (e)--() DELETE e")
         return {"nodes": nodes, "edges": edges}
 
+    async def search_chunk_hashes(
+        self, *, query: str, depth: int, limit: int
+    ) -> list[str]:
+        """CE-6 query arm: entity linking by name-in-query match, bounded
+        RELATES traversal, provenance chunk hashes ranked by path count
+        discounted by hop distance. TEMPLATED Cypher only — depth is a
+        validated int, the query text is always a parameter (no LLM-generated
+        Cypher, no injection surface)."""
+        assert 1 <= depth <= 3, depth
+        # Entity linking is deliberately conservative: only MULTI-WORD entity
+        # names ("Radiology Staff", "Privacy Officer") link — generic
+        # single-word entities ("Pharmacy", "orders") anchor on almost every
+        # question and their neighborhoods measurably displace the text arms'
+        # correct top-k (eval evidence, CE-6). No specific anchor -> the graph
+        # arm stays silent and hybrid retrieval is untouched.
+        cypher = (
+            "MATCH (e:Entity) "
+            "WHERE size(e.name) >= 5 AND e.name CONTAINS ' ' "
+            "  AND toLower($q) CONTAINS toLower(e.name) "
+            f"MATCH path = (e)-[rels:RELATES*1..{depth}]-() "
+            "UNWIND rels AS r "
+            "WITH r.chunkHash AS hash, min(length(path)) AS dist, count(*) AS paths "
+            "RETURN hash ORDER BY toFloat(paths) / dist DESC, hash "
+            "LIMIT $limit"
+        )
+        driver = self._get_driver()
+        async with driver.session() as session:
+            # NOTE: AsyncSession.run's first positional parameter is named
+            # `query` — Cypher params must not shadow it ($q, not $query).
+            result = await with_hard_timeout(
+                session.run(cypher, q=query, limit=limit),
+                seconds=self._settings.external_call_timeout_seconds,
+                operation="neo4j.search",
+            )
+            return [record["hash"] async for record in result]
+
     async def delete_document_graph(self, document_id: str) -> None:
         driver = self._get_driver()
         async with driver.session() as session:

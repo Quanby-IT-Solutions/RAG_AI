@@ -72,6 +72,7 @@ class RetrievalService:
         reranker: Reranker | None = None,
         expansion_client: SupportsComplete | None = None,
         active_embedding_resolver: Any = None,
+        graph_retriever: Any = None,
     ) -> None:
         self._settings = settings
         self._embeddings = embeddings
@@ -83,6 +84,9 @@ class RetrievalService:
         # IN-8: async () -> {"column", "model"}; None -> pinned live column.
         self._active_embedding_resolver = active_embedding_resolver
         self._target_clients: dict[str, Any] = {}
+        # CE-6 (Flow I): graph store for the third RRF arm — None when
+        # GRAPH_RAG_ENABLED is off (the retrieval path is byte-identical).
+        self._graph = graph_retriever
 
     @traced(name="rag.retrieve")
     async def retrieve(
@@ -177,24 +181,65 @@ class RetrievalService:
                 return []
             return await self._repository.search_keyword(query=text, k=pool, filters=filters)
 
+        # CE-6 (Flow I): the graph arm runs for the ORIGINAL query only,
+        # in parallel with the other arms. The graph FINDS chunks (provenance
+        # hashes resolved back to Postgres rows) — it never becomes the
+        # corpus. Any failure degrades to hybrid-only, flagged in the trace.
+        graph_degraded = False
+        w_graph = self._settings.retrieval_graph_weight
+
+        async def graph_arm() -> list[dict[str, Any]]:
+            nonlocal graph_degraded
+            if self._graph is None or w_graph == 0:
+                return []
+            try:
+                # Candidate list capped at top-k (not the full pool): the
+                # graph arm exists to SURFACE relationship chunks, and a long
+                # tail of weak graph votes measurably displaces the text
+                # arms' correct top-5 (eval evidence, CE-6).
+                hashes = await self._graph.search_chunk_hashes(
+                    query=query,
+                    depth=self._settings.graph_traversal_depth,
+                    limit=top_k,
+                )
+                if not hashes:
+                    return []
+                by_hash = await self._repository.fetch_by_hashes(hashes, filters=filters)
+                return [by_hash[h] for h in hashes if h in by_hash]
+            except Exception:
+                logger.warning("graph.query_degraded", exc_info=True)
+                graph_degraded = True
+                try:
+                    from app.graph import GRAPH_EVENTS
+
+                    GRAPH_EVENTS.labels(event="query_degraded").inc()
+                except Exception:
+                    pass
+                return []
+
         # Same pinned client as indexing (D1): all variants embed in ONE call.
         query_vectors: list[list[float] | None] = [None] * len(queries)
         if w_vector != 0:
             vectors, _ = await embeddings_client.embed_texts(queries)
             query_vectors = list(vectors)
 
-        # RT-2 AC: both searches execute concurrently (across all variants).
+        # RT-2 AC: all searches execute concurrently (across all variants);
+        # CE-6 adds the graph arm to the same gather.
         async with stage("retrieval.arms", variants=len(queries)) as record:
             arm_results = await asyncio.gather(
                 *[vector_arm(query_vectors[index]) for index in range(len(queries))],
                 *[keyword_arm(text) for text in queries],
+                graph_arm(),
             )
             record(
                 vectorHits=sum(len(r) for r in arm_results[: len(queries)]),
-                keywordHits=sum(len(r) for r in arm_results[len(queries) :]),
+                keywordHits=sum(len(r) for r in arm_results[len(queries) : -1]),
+                graphHits=len(arm_results[-1]),
+                graphDegraded=graph_degraded,
             )
         vector_results = arm_results[: len(queries)]
-        keyword_results = arm_results[len(queries) :]
+        keyword_results = arm_results[len(queries) : -1]
+        graph_chunks = arm_results[-1]
         vector_chunks = vector_results[0]
         keyword_chunks = keyword_results[0]
 
@@ -202,6 +247,7 @@ class RetrievalService:
         rankings = [
             *[(w_vector, chunks) for chunks in vector_results],
             *[(w_keyword, chunks) for chunks in keyword_results],
+            *([(w_graph, graph_chunks)] if graph_chunks else []),
         ]
         async with stage("retrieval.fusion", rankings=len(rankings)) as record:
             fused_pool = reciprocal_rank_fusion(rankings, rrf_k=self._settings.rrf_k)
@@ -343,6 +389,20 @@ class RetrievalService:
                         {"id": chunk["id"], "rank_score": chunk["similarity"]}
                         for chunk in keyword_chunks
                     ],
+                    # CE-6: the third arm logged separately (retrieved-vs-used
+                    # split extended); degraded = Neo4j failed, hybrid served.
+                    # Key present ONLY in graph mode (baseline logs unchanged).
+                    **(
+                        {
+                            "graph": {
+                                "requested": w_graph > 0,
+                                "degraded": graph_degraded,
+                                "arm": [{"id": chunk["id"]} for chunk in graph_chunks],
+                            }
+                        }
+                        if self._graph is not None
+                        else {}
+                    ),
                     "chunks": [
                         {
                             "id": chunk["id"],
@@ -389,12 +449,23 @@ def get_retrieval_service(request: Request) -> RetrievalService:
             request.app.state.reembed_pointer_redis = client
         return await get_active_embedding(settings, client)
 
+    # CE-6: one shared graph store handle per app when the flag is on.
+    graph_retriever = None
+    if settings.graph_rag_enabled:
+        graph_retriever = getattr(request.app.state, "graph_retriever", None)
+        if graph_retriever is None:
+            from app.graph import GraphRepository
+
+            graph_retriever = GraphRepository(settings)
+            request.app.state.graph_retriever = graph_retriever
+
     return RetrievalService(
         settings=settings,
         embeddings=get_embeddings_client(request),
         repository=get_chunks_repository(request),
         expansion_client=expansion_client,
         active_embedding_resolver=resolve_active,
+        graph_retriever=graph_retriever,
     )
 
 

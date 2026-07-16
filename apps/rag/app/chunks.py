@@ -240,6 +240,52 @@ class ChunksRepository:
             }
         return result
 
+    async def fetch_by_hashes(
+        self, hashes: list[str], *, filters: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """CE-6 graph-arm resolution: provenance chunk hashes -> chunk rows.
+        RT-4 filters apply here too (pre-fusion, like the other arms); parents
+        are excluded by construction. The graph FINDS chunks — the answer text
+        always comes from these Postgres rows, never from the graph itself."""
+        if not hashes:
+            return {}
+        clause, filter_params = build_metadata_filter(filters, start_index=2)
+        join = "JOIN documents d ON d.id = chunks.document_id" if clause else ""
+        extra = f"AND {clause}" if clause else ""
+        sql = f"""
+SELECT chunks.id, chunks.document_id, chunks.content, chunks.metadata,
+       chunks.chunk_index, chunks.content_hash, chunks.parent_chunk_id
+FROM chunks {join}
+WHERE chunks.content_hash = ANY($1::text[])
+  AND chunks.metadata->>'role' IS DISTINCT FROM 'parent' {extra}
+"""
+        conn = await self._connect()
+        try:
+            rows = await with_hard_timeout(
+                conn.fetch(sql, hashes, *filter_params),
+                seconds=self._settings.db_timeout_seconds,
+                operation="chunks.fetch_by_hashes",
+            )
+        finally:
+            await conn.close()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            metadata = row["metadata"]
+            result[row["content_hash"]] = {
+                "id": str(row["id"]),
+                "document_id": str(row["document_id"]),
+                "content": row["content"],
+                "metadata": json.loads(metadata) if isinstance(metadata, str) else metadata,
+                "chunk_index": row["chunk_index"],
+                "content_hash": row["content_hash"],
+                "parent_chunk_id": str(row["parent_chunk_id"])
+                if row["parent_chunk_id"]
+                else None,
+                # Graph-arm chunks carry no cosine score; RRF ranks by arm order.
+                "similarity": None,
+            }
+        return result
+
     async def fetch_embeddings(self, chunk_ids: list[str]) -> dict[str, list[float]]:
         """Stored embeddings for MMR diversification (RT-5). pgvector returns
         a '[x,y,...]' literal, which is valid JSON."""

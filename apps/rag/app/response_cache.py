@@ -74,6 +74,9 @@ def config_fingerprint(settings: Settings) -> str:
         "ragMode": settings.rag_mode,
         "graphRag": settings.graph_rag_enabled,
         "multimodal": settings.multimodal_enabled,
+        # CE-6: the graph arm changes what a query retrieves.
+        "graphWeight": settings.retrieval_graph_weight,
+        "graphDepth": settings.graph_traversal_depth,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 

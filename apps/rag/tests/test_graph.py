@@ -208,6 +208,110 @@ def test_graph_flag_requires_neo4j_password(settings):
     assert "NEO4J_PASSWORD" in str(excinfo.value)
 
 
+# -------------------------------------------------------- CE-6 retrieval arm
+class FakeGraphRetriever:
+    def __init__(self, hashes: list[str] | None = None, *, fail: bool = False) -> None:
+        self.hashes = hashes or []
+        self.fail = fail
+        self.calls: list[dict[str, Any]] = []
+
+    async def search_chunk_hashes(self, *, query, depth, limit):
+        self.calls.append({"query": query, "depth": depth, "limit": limit})
+        if self.fail:
+            raise RuntimeError("neo4j down")
+        return list(self.hashes)
+
+
+def graph_chunk_row(content_hash: str) -> dict[str, Any]:
+    import uuid
+
+    return {
+        "id": str(uuid.uuid4()),
+        "document_id": str(uuid.uuid4()),
+        "content": f"graph chunk {content_hash}",
+        "metadata": {},
+        "chunk_index": 0,
+        "content_hash": content_hash,
+        "parent_chunk_id": None,
+        "similarity": None,
+    }
+
+
+async def test_graph_arm_chunks_enter_rrf_fusion(settings):
+    from app.retrieval import RetrievalService
+    from tests.test_ingest import FakeEmbeddingsClient
+    from tests.test_retrieval import FakeChunksRepository, make_chunk_row
+
+    config = settings(GRAPH_RAG_ENABLED="true", NEO4J_PASSWORD="pw")
+    vector_rows = [make_chunk_row(0.9), make_chunk_row(0.8)]
+    repository = FakeChunksRepository(vector_rows, [])
+    graph_row = graph_chunk_row("gh-1")
+    repository.by_hashes = {"gh-1": graph_row}
+    graph = FakeGraphRetriever(["gh-1", "gh-missing"])
+    service = RetrievalService(
+        config, FakeEmbeddingsClient(), repository, graph_retriever=graph
+    )
+
+    chunks = await service.retrieve("which role links imaging to PACS?", k=3)
+
+    assert graph.calls[0]["depth"] == config.graph_traversal_depth
+    ids = [chunk["id"] for chunk in chunks]
+    assert graph_row["id"] in ids  # the graph-found chunk is in the fusion
+    # Provenance resolution went through Postgres with the RT-4 filter seam.
+    assert repository.by_hashes_calls[0]["hashes"] == ["gh-1", "gh-missing"]
+    fused_graph_chunk = next(c for c in chunks if c["id"] == graph_row["id"])
+    assert fused_graph_chunk["rrf_score"] > 0
+
+
+async def test_graph_outage_degrades_to_hybrid_only(settings, caplog):
+    import logging as _logging
+
+    from app.retrieval import RetrievalService
+    from tests.test_ingest import FakeEmbeddingsClient
+    from tests.test_retrieval import FakeChunksRepository, make_chunk_row
+
+    config = settings(GRAPH_RAG_ENABLED="true", NEO4J_PASSWORD="pw")
+    vector_rows = [make_chunk_row(0.9)]
+    repository = FakeChunksRepository(vector_rows, [])
+    service = RetrievalService(
+        config,
+        FakeEmbeddingsClient(),
+        repository,
+        graph_retriever=FakeGraphRetriever(fail=True),
+    )
+
+    with caplog.at_level(_logging.INFO, logger="app.retrieval"):
+        chunks = await service.retrieve("any question", k=2)
+
+    # Hybrid still answers (Flow I: the graph is never a point of failure).
+    assert chunks and chunks[0]["id"] == vector_rows[0]["id"]
+    record = next(m for m in caplog.messages if "retrieval.retrieved_chunks" in m)
+    payload = json.loads(record.split("retrieval.retrieved_chunks ")[1])
+    assert payload["graph"]["degraded"] is True
+    assert payload["graph"]["arm"] == []
+
+
+async def test_flag_off_retrieval_never_mentions_the_graph(settings, caplog):
+    import logging as _logging
+
+    from app.retrieval import RetrievalService
+    from tests.test_ingest import FakeEmbeddingsClient
+    from tests.test_retrieval import FakeChunksRepository, make_chunk_row
+
+    config = settings()  # baseline
+    repository = FakeChunksRepository([make_chunk_row(0.9)], [])
+    service = RetrievalService(config, FakeEmbeddingsClient(), repository)
+
+    with caplog.at_level(_logging.INFO, logger="app.retrieval"):
+        await service.retrieve("any question", k=1)
+
+    record = next(m for m in caplog.messages if "retrieval.retrieved_chunks" in m)
+    payload = json.loads(record.split("retrieval.retrieved_chunks ")[1])
+    # Baseline trace shape is exactly pre-CE-6 (no graph key at all).
+    assert "graph" not in payload
+    assert repository.by_hashes_calls == []
+
+
 # ------------------------------------------------------------ worker wiring
 async def test_worker_job_populates_graph_and_document_survives_neo4j_outage(monkeypatch):
     from app.config import Settings

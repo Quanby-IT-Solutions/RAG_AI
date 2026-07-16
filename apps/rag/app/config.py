@@ -294,6 +294,13 @@ class Settings(BaseSettings):
     neo4j_uri: str = Field(alias="NEO4J_URI", default="bolt://localhost:7687")
     neo4j_user: str = Field(alias="NEO4J_USER", default="neo4j")
     neo4j_password: SecretStr | None = Field(alias="NEO4J_PASSWORD", default=None)
+    # CE-6: the graph arm's RRF weight (third list beside vector/keyword) and
+    # the bounded traversal depth (templated Cypher — never LLM-generated).
+    # Weight defaults BELOW the text arms: the graph is an accelerator for
+    # relationship questions, and a heavier weight measurably degrades
+    # single-hop retrieval (eval evidence in docs/CONTEXTUAL-RETRIEVAL-RESULTS.md).
+    retrieval_graph_weight: float = Field(alias="RETRIEVAL_GRAPH_WEIGHT", default=0.25, ge=0)
+    graph_traversal_depth: int = Field(alias="GRAPH_TRAVERSAL_DEPTH", default=2, ge=1, le=3)
 
     # --- Timeouts (seconds) for the shared hard-timeout helper ---
     db_timeout_seconds: float = Field(alias="DB_TIMEOUT_SECONDS", default=5.0, gt=0)

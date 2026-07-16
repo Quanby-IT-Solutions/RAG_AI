@@ -77,6 +77,31 @@ first pass — see `rag_agentic_hops`). Off-corpus questions run up to the
 2 real LLM rewrites). `rag_chat_mode_latency_seconds{mode}` tracks this
 split continuously.
 
+## Graph arm on vs off (CE-6 evidence — CE-9 matrix inputs)
+
+Golden set extended to 14 items (3 multi-hop, tagged `ce6-multihop`).
+Corpus graph: 385 entities / 320 edges extracted from the TOR (50 chunks,
+$0.012, migration job `13dbafee`).
+
+| Metric | Graph OFF (`bfe94ae6`) | Graph ON (`b89881dd`) | Delta |
+|---|---|---|---|
+| Hit rate | 1.000 | 1.000 | 0.000 |
+| MRR | 0.905 | 0.905 | 0.000 |
+| Recall@5 | 0.893 | 0.893 | 0.000 |
+
+Tuning history (kept honest — these runs are stored too): naive containment
+entity-linking dragged hit rate to 0.857 (`239bc58c`, `57b4e2d9`): generic
+single-word entities ("Pharmacy", "orders") anchored on nearly every
+question and their graph neighborhoods displaced the text arms' correct
+top-5. The shipped linker requires MULTI-WORD entity names, so the graph arm
+only fires on a specific anchor ("Radiology Staff", "Privacy Officer") and
+stays silent otherwise — parity on this ceiling corpus, upside reserved for
+relationship questions flat retrieval actually fails (needs a bigger corpus
+to demonstrate, same caveat as everything above). Live-verified: an
+entity-anchored question produced a non-degraded graph-arm hit fused into
+the answer with a normal citation; a Neo4j outage mid-query degraded to
+hybrid-only with the trace marker set (and an entire eval ran that way).
+
 Generation quality on the enriched index (stored eval run `fdfa4a50`,
 `generation=true`): faithfulness 1.0, answer relevancy 1.0, hit rate 1.0
 (11 items). The EV harness's generation path exercises the shared grounded
