@@ -1,6 +1,7 @@
 "use client"
 
-import { Fragment, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { RefreshIcon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
 
@@ -113,7 +114,15 @@ function JobDetailRow({ jobId }: Readonly<{ jobId: string }>) {
 export function JobsPanel() {
 	const { data: jobs, isPending, isError, error } = useIngestionJobsQuery()
 	const rerun = useRerunJobMutation()
+	// RP-5 deep link: /corpus?job=<id> opens that job's detail for re-run.
+	// Applied post-hydration: the server render has no search params, so
+	// seeding useState from them would mismatch.
+	const searchParams = useSearchParams()
 	const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
+	const linkedJobId = searchParams.get("job")
+	useEffect(() => {
+		if (linkedJobId) setExpandedJobId(linkedJobId)
+	}, [linkedJobId])
 
 	// No corpus.ingest.run -> the console simply isn't shown.
 	if (isError && isPermissionError(error)) return null

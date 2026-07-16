@@ -542,6 +542,147 @@ export function buildCachePerformanceReport(promQueryRange: PromQueryRange): Rep
 	}
 }
 
+/**
+ * RP-5: Ingestion Status Report — per-job outcomes over the ingestion-owned
+ * tables (read-only): documents by type/status, chunks produced, embedding
+ * batches + IN-6 cache-hit ratio (the dedupe layer), and failed documents
+ * with reasons linking to the IN-7 console for re-run.
+ */
+export const ingestionStatusReport: ReportImpl = {
+	definition: {
+		key: "ingestion-status",
+		title: "Ingestion Status",
+		description:
+			"Ingestion jobs with documents by type/status, chunks produced, embedding batches and cache-hit ratio (IN-6 dedupe), and failed documents with reasons. Job links open the IN-7 console for re-run.",
+		filters: [
+			{
+				key: "status",
+				label: "Job status",
+				type: "select",
+				options: ["queued", "running", "completed", "failed"],
+			},
+			{ key: "docType", label: "Doc type", type: "text" },
+			{ key: "dateFrom", label: "From", type: "date" },
+			{ key: "dateTo", label: "To", type: "date" },
+		],
+		columns: [
+			{ key: "createdAt", label: "When" },
+			{ key: "jobId", label: "Job", linkTemplate: "/corpus?job={value}" },
+			{ key: "status", label: "Status" },
+			{ key: "documents", label: "Documents" },
+			{ key: "docTypes", label: "By type/status" },
+			{ key: "chunks", label: "Chunks" },
+			{ key: "embedBatches", label: "Embed batches" },
+			{ key: "cacheHitRatioPct", label: "Embed cache hit %" },
+			{ key: "failedDocuments", label: "Failed docs" },
+			{ key: "failureReasons", label: "Failure reasons" },
+		],
+		chart: { xKey: "day", yKey: "chunks", yLabel: "Chunks produced" },
+	},
+	async run(filters, page, pageSize) {
+		const dateFrom = filters["dateFrom"] ? new Date(filters["dateFrom"]) : null
+		const dateTo = filters["dateTo"]
+			? new Date(new Date(filters["dateTo"]).getTime() + 24 * 3600 * 1000)
+			: null
+		const status = filters["status"] || null
+		const docType = filters["docType"] ? `%${filters["docType"]}%` : null
+
+		const result = await db.execute(sql`
+			SELECT
+				j.id,
+				j.created_at,
+				j.status,
+				j.stats,
+				j.error,
+				(
+					SELECT string_agg(breakdown.doc_type || '/' || breakdown.status || ': ' || breakdown.n, ', ')
+					FROM (
+						SELECT d.doc_type, jd.status, count(*)::int AS n
+						FROM job_documents jd
+						JOIN documents d ON d.id = jd.document_id
+						WHERE jd.job_id = j.id
+						GROUP BY d.doc_type, jd.status
+					) breakdown
+				) AS doc_types
+			FROM ingestion_jobs j
+			WHERE (${dateFrom}::timestamptz IS NULL OR j.created_at >= ${dateFrom}::timestamptz)
+				AND (${dateTo}::timestamptz IS NULL OR j.created_at < ${dateTo}::timestamptz)
+				AND (${status}::text IS NULL OR j.status = ${status})
+				AND (${docType}::text IS NULL OR EXISTS (
+					SELECT 1 FROM job_documents jd
+					JOIN documents d ON d.id = jd.document_id
+					WHERE jd.job_id = j.id AND d.doc_type ILIKE ${docType}
+				))
+			ORDER BY j.created_at DESC
+		`)
+		const jobRows = (result.rows as Record<string, unknown>[]).map(row => {
+			const stats = (row["stats"] ?? {}) as Record<string, unknown>
+			const failures = Array.isArray(stats["failures"])
+				? (stats["failures"] as Record<string, unknown>[])
+				: []
+			const hits = Number(stats["cacheHits"] ?? 0)
+			const misses = Number(stats["cacheMisses"] ?? 0)
+			const lookups = hits + misses
+			// Raw execute() rows come back driver-typed (string or Date).
+			const createdAt = new Date(row["created_at"] as string | Date)
+			const reasons = failures
+				.map(failure => String(failure["error"] ?? "unknown"))
+				.join("; ")
+			return {
+				createdAt,
+				day: createdAt.toISOString().slice(0, 10),
+				jobId: row["id"],
+				status: row["status"],
+				documents: Number(stats["documents"] ?? 0),
+				docTypes: row["doc_types"] ?? "",
+				chunks: Number(stats["chunks"] ?? 0),
+				embedBatches: Number(stats["embedBatches"] ?? 0),
+				cacheHitRatioPct: lookups > 0 ? Math.round((hits / lookups) * 100) : "",
+				failedDocuments: failures.length,
+				failureReasons: row["error"]
+					? [String(row["error"]), reasons].filter(Boolean).join("; ")
+					: reasons,
+			}
+		})
+
+		// Documents that fail at PARSE never reach a job (the sync register
+		// step rejects them) — surface them as their own failed rows.
+		let parseRows: typeof jobRows = []
+		if (!status || status === "failed") {
+			const failedDocs = await db.execute(sql`
+				SELECT id, ingested_at, doc_type, source_uri, error
+				FROM documents
+				WHERE status = 'failed'
+					AND (${dateFrom}::timestamptz IS NULL OR ingested_at >= ${dateFrom}::timestamptz)
+					AND (${dateTo}::timestamptz IS NULL OR ingested_at < ${dateTo}::timestamptz)
+					AND (${docType}::text IS NULL OR doc_type ILIKE ${docType})
+				ORDER BY ingested_at DESC
+			`)
+			parseRows = (failedDocs.rows as Record<string, unknown>[]).map(row => {
+				const createdAt = new Date(row["ingested_at"] as string | Date)
+				return {
+					createdAt,
+					day: createdAt.toISOString().slice(0, 10),
+					jobId: "",
+					status: "failed (parse)",
+					documents: 1,
+					docTypes: `${String(row["doc_type"])}/failed: 1`,
+					chunks: 0,
+					embedBatches: 0,
+					cacheHitRatioPct: "" as const,
+					failedDocuments: 1,
+					failureReasons: `${String(row["source_uri"])}: ${String(row["error"] ?? "unknown")}`,
+				}
+			})
+		}
+
+		const rows = [...jobRows, ...parseRows].sort(
+			(a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+		)
+		return { rows: rows.slice((page - 1) * pageSize, page * pageSize), total: rows.length }
+	},
+}
+
 /** RP-1 registry — grown through its consumers (RP-2..5). */
 export function buildReports(deps: ReportDeps): Record<string, ReportImpl> {
 	const reports = [
@@ -549,6 +690,7 @@ export function buildReports(deps: ReportDeps): Record<string, ReportImpl> {
 		usageCostReport,
 		buildQualityReport(deps.evalRunsService),
 		buildCachePerformanceReport(deps.promQueryRange),
+		ingestionStatusReport,
 	]
 	return Object.fromEntries(reports.map(report => [report.definition.key, report]))
 }

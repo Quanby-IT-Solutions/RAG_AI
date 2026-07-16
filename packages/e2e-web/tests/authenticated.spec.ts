@@ -685,3 +685,39 @@ test.describe("cache & performance report (RP-4)", () => {
 		await expect(page.getByTestId("chart-threshold")).toBeVisible()
 	})
 })
+
+test.describe("ingestion status report (RP-5)", () => {
+	test("summarizes jobs with cache-hit ratio and links failures to the IN-7 console", async ({
+		page,
+	}) => {
+		await page.goto("/reports")
+		const view = page.getByTestId("reports-view")
+		await expect(view).toBeVisible({ timeout: 15_000 })
+
+		await view.getByRole("combobox").first().click()
+		await page.getByRole("option", { name: "Ingestion Status" }).click()
+		await expect(view.locator("[data-slot=card-title]")).toHaveText("Ingestion Status")
+
+		for (const header of [
+			"By type/status",
+			"Chunks",
+			"Embed batches",
+			"Embed cache hit %",
+			"Failed docs",
+			"Failure reasons",
+		]) {
+			await expect(view.getByRole("columnheader", { name: header })).toBeVisible({
+				timeout: 15_000,
+			})
+		}
+
+		// The job cell links to the IN-7 console and auto-expands that job.
+		const link = view.locator("table tbody a").first()
+		await expect(link).toBeVisible({ timeout: 15_000 })
+		await link.click()
+		await page.waitForURL(/\/corpus\?job=/, { timeout: 30_000 })
+		await expect(page.getByRole("button", { name: "Hide" })).toBeVisible({
+			timeout: 30_000,
+		})
+	})
+})

@@ -292,7 +292,19 @@ export function ReportsView() {
 										<TableRow key={index}>
 											{columns.map(column => (
 												<TableCell key={column.key} className="whitespace-nowrap">
-													{formatCell(row[column.key])}
+													{column.linkTemplate && row[column.key] ? (
+														<a
+															className="text-primary underline underline-offset-2"
+															href={column.linkTemplate.replace(
+																"{value}",
+																encodeURIComponent(formatCell(row[column.key]))
+															)}
+														>
+															{formatCell(row[column.key])}
+														</a>
+													) : (
+														formatCell(row[column.key])
+													)}
 												</TableCell>
 											))}
 										</TableRow>

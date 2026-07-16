@@ -9,12 +9,20 @@ export const ReportFilterDefSchema = z.object({
 	options: z.array(z.string()).optional(),
 })
 
+/** A result column; `linkTemplate` renders the cell as a link with
+ * `{value}` substituted (RP-5: failed docs link to the IN-7 console). */
+export const ReportColumnSchema = z.object({
+	key: z.string(),
+	label: z.string(),
+	linkTemplate: z.string().optional(),
+})
+
 export const ReportDefinitionSchema = z.object({
 	key: z.string(),
 	title: z.string(),
 	description: z.string(),
 	filters: z.array(ReportFilterDefSchema),
-	columns: z.array(z.object({ key: z.string(), label: z.string() })),
+	columns: z.array(ReportColumnSchema),
 	/** Optional bar-chart hint rendered above the table (RP-2 charts).
 	 * `threshold` overlays a horizontal line (RP-4 NFR breach visibility). */
 	chart: z
@@ -37,7 +45,7 @@ export const RunReportRequestSchema = z.object({
 
 export const ReportResultSchema = z.object({
 	key: z.string(),
-	columns: z.array(z.object({ key: z.string(), label: z.string() })),
+	columns: z.array(ReportColumnSchema),
 	rows: z.array(z.record(z.string(), z.unknown())),
 	total: z.number().int(),
 	page: z.number().int(),
