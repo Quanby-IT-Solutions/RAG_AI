@@ -156,6 +156,7 @@ class GenerationService:
         repository: ConversationsRepository,
         compressor: "Compressor | None" = None,
         response_cache: "ResponseCache | None" = None,
+        agentic: Any = None,
     ) -> None:
         self._settings = settings
         self._retrieval = retrieval
@@ -169,6 +170,10 @@ class GenerationService:
         self._compressor = compressor
         # CP-1: Redis response/semantic cache (None when off / unit tests).
         self._response_cache = response_cache
+        # CE-3 (Flow H): AgenticRetriever when RAG_MODE=agentic — replaces the
+        # single-shot retrieve INSIDE the cache-miss branch only; None keeps
+        # the linear path byte-identical.
+        self._agentic = agentic
 
     async def _build_citations(
         self, answer: str, chunks: list[dict[str, Any]]
@@ -328,7 +333,22 @@ class GenerationService:
         """Shared Flow B steps 3-5 for both response modes: hybrid retrieve
         (RT-1/RT-2), hard token budget (GN-2, rank-then-select), grounded
         prompt assembly. Returns everything the generate stage needs."""
-        chunks = await self._retrieval.retrieve(query, k=k, filters=filters)
+        # CE-3 (Flow H): in agentic mode the grade/rewrite loop produces the
+        # retrieval set; ANY loop failure falls through to the linear
+        # single-shot retrieve — never an error, never a lost answer.
+        agentic_trace: dict[str, Any] | None = None
+        chunks: list[dict[str, Any]] | None = None
+        if self._agentic is not None:
+            try:
+                chunks, agentic_trace = await self._agentic.retrieve(
+                    query, k=k, filters=filters
+                )
+            except Exception:
+                logger.warning("agentic.loop_degraded_to_linear", exc_info=True)
+                agentic_trace = None
+                chunks = None
+        if chunks is None:
+            chunks = await self._retrieval.retrieve(query, k=k, filters=filters)
         retrieved_record = [
             {
                 "id": chunk["id"],
@@ -406,6 +426,8 @@ class GenerationService:
             "used_record": used_record,
             "selection": selection,
             "messages": messages,
+            # CE-3: loop trace (None in linear mode — audit shape unchanged).
+            "agentic": agentic_trace,
         }
 
     @traced(name="rag.chat")
@@ -616,6 +638,19 @@ class GenerationService:
                 "degraded": degraded,
                 "costUsd": cost_usd,
                 "traceId": trace_id,
+                # CE-3: hop summary only when the loop ran (linear audit
+                # payloads keep their exact pre-CE-3 shape).
+                **(
+                    {
+                        "agentic": {
+                            "hopCount": len(prep["agentic"]["hops"]),
+                            "rewrites": prep["agentic"]["rewrites"],
+                            "sufficient": prep["agentic"]["sufficient"],
+                        }
+                    }
+                    if prep.get("agentic")
+                    else {}
+                ),
             },
         )
 
@@ -840,6 +875,18 @@ class GenerationService:
                 "streamed": True,
                 "ttftMs": ttft_ms,
                 "traceId": trace_id,
+                # CE-3: hop summary only when the loop ran.
+                **(
+                    {
+                        "agentic": {
+                            "hopCount": len(prep["agentic"]["hops"]),
+                            "rewrites": prep["agentic"]["rewrites"],
+                            "sufficient": prep["agentic"]["sufficient"],
+                        }
+                    }
+                    if prep.get("agentic")
+                    else {}
+                ),
             },
         )
 
@@ -919,6 +966,22 @@ def get_response_cache(request: Request) -> "ResponseCache | None":
     return build_response_cache(settings, get_embeddings_client(request))
 
 
+def get_agentic(request: Request, retrieval: RetrievalService) -> Any:
+    """CE-3 seam: AgenticRetriever when RAG_MODE=agentic, else None (linear
+    path untouched). The grader/rewriter client is shared per app and CP-4
+    bucket-gated; the retriever wraps the per-request RetrievalService."""
+    settings = request.app.state.settings
+    if settings.rag_mode != "agentic":
+        return None
+    from app.agentic import AgenticRetriever, build_agentic_client
+
+    client = getattr(request.app.state, "agentic_client", None)
+    if client is None:
+        client = build_agentic_client(settings, bucket=get_provider_bucket(request))
+        request.app.state.agentic_client = client
+    return AgenticRetriever(settings, retrieval, client)
+
+
 def get_compressor(request: Request) -> "Compressor | None":
     """RT-7 seam: config-built compressor (None when COMPRESSION_ENABLED off).
     The embeddings filter reuses the pinned per-app EmbeddingsClient; the LLM
@@ -952,6 +1015,7 @@ async def chat(
         repository=repository,
         compressor=get_compressor(request),
         response_cache=get_response_cache(request),
+        agentic=get_agentic(request, retrieval),
     )
     try:
         return await service.answer(
@@ -996,6 +1060,7 @@ async def chat_stream(
         repository=repository,
         compressor=get_compressor(request),
         response_cache=get_response_cache(request),
+        agentic=get_agentic(request, retrieval),
     )
     # Screening (SC-1) and ownership are checked BEFORE the stream starts so
     # a refusal is a clean 400/403/404 response, not a broken SSE stream.
