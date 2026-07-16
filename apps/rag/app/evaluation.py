@@ -310,6 +310,16 @@ async def run_retrieval_eval(
         # EV-3: generation metrics on/off + the models involved.
         "generation": generation,
         "generationModel": chat_client.model if generation and chat_client else None,
+        # CE-9: the resolved Phase 7 flag identity — the eval gate (EV-4)
+        # only compares runs against a baseline with the SAME identity, so
+        # enabling a profile never trips the gate against another profile's
+        # numbers.
+        "profileFlags": {
+            "contextual": settings.contextual_chunks_enabled,
+            "mode": settings.rag_mode,
+            "graph": settings.graph_rag_enabled,
+            "multimodal": settings.multimodal_enabled,
+        },
     }
 
     run_id = await repository.create_run(

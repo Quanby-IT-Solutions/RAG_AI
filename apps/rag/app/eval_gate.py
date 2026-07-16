@@ -33,30 +33,50 @@ GATED_METRICS = (
     "answerRelevancy",
 )
 
-_BASELINE_SQL = """
+_BASELINES_SQL = """
 SELECT b.run_id, b.created_at AS promoted_at, b.promoted_by,
-       r.metrics, r.git_sha
+       r.metrics, r.git_sha, r.config
 FROM eval_baselines b
 JOIN eval_runs r ON r.id = b.run_id
 ORDER BY b.created_at DESC
-LIMIT 1
+LIMIT 25
 """
 
 
+def profile_identity(settings: Settings) -> dict[str, Any]:
+    """CE-9: the resolved Phase 7 flag identity a baseline must share to be
+    comparable (same semantics as the CE-0 cache fingerprint: flags, not the
+    profile name)."""
+    return {
+        "contextual": settings.contextual_chunks_enabled,
+        "mode": settings.rag_mode,
+        "graph": settings.graph_rag_enabled,
+        "multimodal": settings.multimodal_enabled,
+    }
+
+
 async def fetch_current_baseline(settings: Settings) -> dict[str, Any] | None:
+    """Newest approved baseline whose run shares the ACTIVE profile identity
+    (CE-9): enabling a profile never gates against another profile's numbers.
+    Legacy baselines (runs recorded before profile identity existed) only
+    apply when no profile-matched baseline exists, with a warning."""
     conn = await with_hard_timeout(
         asyncpg.connect(dsn=settings.database_url),
         seconds=settings.db_timeout_seconds,
         operation="postgres.connect",
     )
     try:
-        row = await with_hard_timeout(
-            conn.fetchrow(_BASELINE_SQL),
+        rows = await with_hard_timeout(
+            conn.fetch(_BASELINES_SQL),
             seconds=settings.db_timeout_seconds,
             operation="eval_gate.fetch_baseline",
         )
     finally:
         await conn.close()
+    if not rows:
+        return None
+
+    row = select_baseline_row(rows, profile_identity(settings))
     if row is None:
         return None
     metrics = row["metrics"]
@@ -67,6 +87,27 @@ async def fetch_current_baseline(settings: Settings) -> dict[str, Any] | None:
         "gitSha": row["git_sha"],
         "metrics": json.loads(metrics) if isinstance(metrics, str) else (metrics or {}),
     }
+
+
+def select_baseline_row(rows: list[Any], identity: dict[str, Any]) -> Any | None:
+    """Newest row whose run config carries the SAME profile identity; legacy
+    rows (pre-CE-9, no profileFlags) only as a warned fallback."""
+    legacy: Any = None
+    for row in rows:
+        config = row["config"]
+        config = json.loads(config) if isinstance(config, str) else (config or {})
+        flags = config.get("profileFlags")
+        if flags == identity:
+            return row
+        if flags is None and legacy is None:
+            legacy = row
+    if legacy is not None:
+        logger.warning(
+            "eval_gate.legacy_baseline_fallback %s",
+            json.dumps({"identity": identity, "runId": str(legacy["run_id"])}),
+        )
+        return legacy
+    return None
 
 
 def evaluate_gate(

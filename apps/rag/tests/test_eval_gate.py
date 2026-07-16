@@ -1,6 +1,60 @@
 """EV-4 gate-comparison tests (Flow F)."""
 
-from app.eval_gate import evaluate_gate
+from app.eval_gate import evaluate_gate, profile_identity, select_baseline_row
+
+
+# ----------------------------------------------- CE-9 per-profile baselines
+def _row(run_id: str, flags):
+    return {
+        "run_id": run_id,
+        "config": {"profileFlags": flags} if flags is not None else {},
+        "metrics": {"hitRate": 1.0},
+        "git_sha": "x",
+        "promoted_by": "u",
+    }
+
+
+BASELINE_FLAGS = {"contextual": False, "mode": "linear", "graph": False, "multimodal": False}
+AGENTIC_FLAGS = {"contextual": True, "mode": "agentic", "graph": False, "multimodal": False}
+
+
+def test_baseline_selection_matches_the_active_profile_identity():
+    rows = [
+        _row("newest-agentic", AGENTIC_FLAGS),
+        _row("older-baseline", BASELINE_FLAGS),
+    ]
+
+    # Enabling agentic gates against the agentic baseline, never baseline's.
+    assert select_baseline_row(rows, AGENTIC_FLAGS)["run_id"] == "newest-agentic"
+    assert select_baseline_row(rows, BASELINE_FLAGS)["run_id"] == "older-baseline"
+
+
+def test_no_matching_profile_baseline_returns_none():
+    rows = [_row("agentic-only", AGENTIC_FLAGS)]
+    assert select_baseline_row(rows, BASELINE_FLAGS) is None
+
+
+def test_legacy_baseline_is_a_warned_fallback_only():
+    rows = [
+        _row("legacy", None),
+        _row("agentic", AGENTIC_FLAGS),
+    ]
+    # A profile-matched row wins over a NEWER legacy row...
+    assert select_baseline_row(rows, AGENTIC_FLAGS)["run_id"] == "agentic"
+    # ...but a legacy row still gates profiles with no baseline of their own.
+    assert select_baseline_row(rows, BASELINE_FLAGS)["run_id"] == "legacy"
+
+
+def test_profile_identity_uses_resolved_flags(monkeypatch):
+    from tests.conftest import REQUIRED_ENV
+
+    for key, value in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RAG_PROFILE", "agentic")
+    from app.config import Settings
+
+    identity = profile_identity(Settings())
+    assert identity == AGENTIC_FLAGS
 
 
 def test_gate_passes_when_all_metrics_hold_within_tolerance():

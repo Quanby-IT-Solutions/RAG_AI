@@ -145,6 +145,38 @@ changes are needed; if it splits web/api across different domains, update
 └── tooling/           # Shared configs (ESLint, Prettier, TypeScript)
 ```
 
+## RAG Profiles — pick your variant with one line
+
+This template ships four RAG architectures in ONE codebase. Set
+`RAG_PROFILE` in `apps/rag/.env` (both the API service and the arq worker):
+
+| `RAG_PROFILE` | What you get | Extra infra | Cost/latency |
+|---|---|---|---|
+| `baseline` (default) | hybrid retrieval + grounded generation — the core template | none | reference point |
+| `contextual` | + LLM-generated chunk context in both retrieval indexes | none | +1 cheap LLM call per chunk at ingest (cached) |
+| `agentic` | + self-correcting retrieval loop (grade → rewrite → groundedness gate) | none | +2–5 cheap LLM calls / +3.4–7.5 s per uncached question |
+| `full` | + Graph RAG (Neo4j) + multimodal (page images + vision answers) | `docker compose --profile graph up -d neo4j` + `NEO4J_PASSWORD` | + extraction/caption calls at ingest (cached); ~5× on vision-worthy pages |
+
+Rules that make this safe:
+
+- An explicitly set flag (`CONTEXTUAL_CHUNKS_ENABLED`, `RAG_MODE`,
+  `GRAPH_RAG_ENABLED`, `MULTIMODAL_ENABLED`) always overrides the preset.
+- Any flag change auto-invalidates the response cache (config fingerprint).
+- Enabling `contextual` (or higher) on an **existing** corpus requires the
+  zero-downtime shadow re-index — follow the runbook in
+  [docs/RUNNING.md](docs/RUNNING.md#enabling-contextual-retrieval-ce-2-rollout-runbook).
+- Every optional stage degrades gracefully: loop failures fall through to
+  linear, Neo4j outages fall back to hybrid, vision failures answer from
+  captions — flagged in traces, never an error.
+- Measured per-profile numbers: [docs/PROFILE-MATRIX.md](docs/PROFILE-MATRIX.md)
+  and [docs/CONTEXTUAL-RETRIEVAL-RESULTS.md](docs/CONTEXTUAL-RETRIEVAL-RESULTS.md).
+  The CI eval gate compares each run against a baseline with the SAME
+  profile identity, so switching profiles never trips it against another
+  profile's numbers.
+
+The default quickstart below runs `baseline` and needs none of the Phase 7
+infrastructure.
+
 ## Environment Variables
 
 | Variable                      | Required | App         | Description                           |
