@@ -265,7 +265,8 @@
       "Bash(curl -s -o /dev/null -w 'web=%{http_code}\\\\n' --max-time 30 http://localhost:3001/login)",
       "PowerShell(docker volume ls *)",
       "Bash(git -C /d/PROJECTS/RAG_AI status --short)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "PowerShell(try { \\(Invoke-WebRequest http://127.0.0.1:8000/health -UseBasicParsing -TimeoutSec 5\\).Content } catch { \"8000 err: $_\" })"
     ]
   }
 }
