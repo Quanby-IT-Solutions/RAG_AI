@@ -168,13 +168,15 @@ class AnthropicChatClient:
 
     async def complete(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int] | None]:
         system, chat = self._split_messages(messages)
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self._settings.generation_max_tokens,
+            "messages": chat,
+        }
+        if system:
+            request_kwargs["system"] = system
         response = await with_hard_timeout(
-            self._anthropic().messages.create(
-                model=self.model,
-                max_tokens=self._settings.generation_max_tokens,
-                system=system or None,
-                messages=chat,  # type: ignore[arg-type]
-            ),
+            self._anthropic().messages.create(**request_kwargs),
             seconds=self._settings.external_call_timeout_seconds,
             operation="anthropic.messages.create",
         )
@@ -190,12 +192,14 @@ class AnthropicChatClient:
         Opening the stream runs under the hard timeout (GN-5 timeout audit);
         the stream itself is unbounded by design (long answers)."""
         system, chat = self._split_messages(messages)
-        manager = self._anthropic().messages.stream(
-            model=self.model,
-            max_tokens=self._settings.generation_max_tokens,
-            system=system or None,
-            messages=chat,  # type: ignore[arg-type]
-        )
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self._settings.generation_max_tokens,
+            "messages": chat,
+        }
+        if system:
+            request_kwargs["system"] = system
+        manager = self._anthropic().messages.stream(**request_kwargs)
         token_usage: dict[str, int] | None = None
         stream = await with_hard_timeout(
             manager.__aenter__(),
