@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from app import health as health_checks
 from app.main import create_app
@@ -48,6 +49,78 @@ async def test_health_503_when_redis_down(settings, monkeypatch):
 
 
 # ------------------------------------------------------------- OB-3 probes
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        pytest.param(200, "up", id="success-200"),
+        pytest.param(401, "unauthorized", id="unauthorized-401"),
+        pytest.param(403, "unauthorized", id="unauthorized-403"),
+        pytest.param(429, "up", id="rate-limited-429"),
+        pytest.param(500, "down", id="server-error-500"),
+    ],
+)
+async def test_probe_provider_classifies_http_status(
+    monkeypatch, status_code: int, expected: str
+):
+    class SyntheticAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get(self, url, headers):
+            return httpx.Response(status_code)
+
+    monkeypatch.setattr(
+        health_checks.httpx,
+        "AsyncClient",
+        lambda *, timeout: SyntheticAsyncClient(),
+    )
+
+    assert (
+        await health_checks._probe_provider("provider", "https://provider", {}, 1.0)
+        == expected
+    )
+
+
+async def test_probe_provider_reports_network_failure_as_down(monkeypatch):
+    class FailingAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get(self, url, headers):
+            raise httpx.ConnectError("synthetic network failure")
+
+    monkeypatch.setattr(
+        health_checks.httpx,
+        "AsyncClient",
+        lambda *, timeout: FailingAsyncClient(),
+    )
+
+    assert await health_checks._probe_provider("provider", "https://provider", {}, 1.0) == "down"
+
+
+async def test_health_unauthorized_provider_degrades_without_failing_readiness(
+    settings, monkeypatch
+):
+    async def fake_providers(_settings):
+        return {"openai": "unauthorized"}
+
+    monkeypatch.setattr(health_checks, "check_providers", fake_providers)
+
+    response = await _get_health(settings, monkeypatch, db_ok=True, redis_ok=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["providers"] == {"openai": "unauthorized"}
+    assert body["status"] == "degraded"
+
+
 async def test_provider_probes_are_cached_per_interval(monkeypatch):
     import app.health as health
     from tests.conftest import REQUIRED_ENV

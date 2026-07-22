@@ -55,7 +55,9 @@ async def _probe_provider(
     try:
         async with httpx.AsyncClient(timeout=probe_timeout) as client:
             response = await client.get(url, headers=headers)
-        # Any HTTP response (even 401) proves network reachability.
+        # Authentication failures prove reachability but expose invalid credentials.
+        if response.status_code in (401, 403):
+            return "unauthorized"
         return "up" if response.status_code < 500 else "down"
     except Exception:
         return "down"

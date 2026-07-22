@@ -13,7 +13,7 @@ closes the provider stream (client disconnect -> no orphaned spend).
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict
 
 from app.config import Settings
 from app.timeouts import with_hard_timeout
@@ -23,6 +23,13 @@ if TYPE_CHECKING:
     from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+
+class _AnthropicRequestKwargs(TypedDict):
+    model: str
+    max_tokens: int
+    messages: list[dict[str, str]]
+    system: NotRequired[str]
 
 
 class ChatModelClient(Protocol):
@@ -168,7 +175,7 @@ class AnthropicChatClient:
 
     async def complete(self, messages: list[dict[str, str]]) -> tuple[str, dict[str, int] | None]:
         system, chat = self._split_messages(messages)
-        request_kwargs: dict[str, Any] = {
+        request_kwargs: _AnthropicRequestKwargs = {
             "model": self.model,
             "max_tokens": self._settings.generation_max_tokens,
             "messages": chat,
@@ -192,7 +199,7 @@ class AnthropicChatClient:
         Opening the stream runs under the hard timeout (GN-5 timeout audit);
         the stream itself is unbounded by design (long answers)."""
         system, chat = self._split_messages(messages)
-        request_kwargs: dict[str, Any] = {
+        request_kwargs: _AnthropicRequestKwargs = {
             "model": self.model,
             "max_tokens": self._settings.generation_max_tokens,
             "messages": chat,

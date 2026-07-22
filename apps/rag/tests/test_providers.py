@@ -154,6 +154,37 @@ class FakeAnthropicMessages:
         )
 
 
+class FakeAnthropicStream:
+    def __init__(self) -> None:
+        self.text_stream = self._text_stream()
+
+    async def _text_stream(self):
+        yield "Grounded answer. [1]"
+
+    async def get_final_message(self):
+        return SimpleNamespace(usage=SimpleNamespace(input_tokens=120, output_tokens=30))
+
+
+class FakeAnthropicStreamManager:
+    def __init__(self) -> None:
+        self.stream = FakeAnthropicStream()
+
+    async def __aenter__(self):
+        return self.stream
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class FakeAnthropicStreamingMessages:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeAnthropicStreamManager()
+
+
 async def test_anthropic_completion_omits_system_for_user_only_messages():
     settings = make_settings(ANTHROPIC_API_KEY="sk-ant-test")
     messages = FakeAnthropicMessages()
@@ -166,36 +197,7 @@ async def test_anthropic_completion_omits_system_for_user_only_messages():
 
 async def test_anthropic_stream_omits_system_for_user_only_messages():
     settings = make_settings(ANTHROPIC_API_KEY="sk-ant-test")
-
-    class FakeStream:
-        def __init__(self) -> None:
-            self.text_stream = self._text_stream()
-
-        async def _text_stream(self):
-            yield "Grounded answer. [1]"
-
-        async def get_final_message(self):
-            return SimpleNamespace(usage=SimpleNamespace(input_tokens=120, output_tokens=30))
-
-    class FakeStreamManager:
-        def __init__(self) -> None:
-            self.stream = FakeStream()
-
-        async def __aenter__(self):
-            return self.stream
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    class FakeStreamingMessages:
-        def __init__(self) -> None:
-            self.calls: list[dict] = []
-
-        def stream(self, **kwargs):
-            self.calls.append(kwargs)
-            return FakeStreamManager()
-
-    messages = FakeStreamingMessages()
+    messages = FakeAnthropicStreamingMessages()
     client = AnthropicChatClient(settings, client=SimpleNamespace(messages=messages))
 
     chunks = [chunk async for chunk in client.stream([{"role": "user", "content": "Question?"}])]
@@ -205,6 +207,30 @@ async def test_anthropic_stream_omits_system_for_user_only_messages():
         ("__usage__", {"promptTokens": 120, "completionTokens": 30, "totalTokens": 150}),
     ]
     assert "system" not in messages.calls[0]
+
+
+async def test_anthropic_stream_maps_system_messages_and_usage():
+    settings = make_settings(ANTHROPIC_API_KEY="sk-ant-test")
+    messages = FakeAnthropicStreamingMessages()
+    client = AnthropicChatClient(settings, client=SimpleNamespace(messages=messages))
+
+    chunks = [
+        chunk
+        async for chunk in client.stream(
+            [
+                {"role": "system", "content": "You are grounded."},
+                {"role": "system", "content": "Cite your sources."},
+                {"role": "user", "content": "Question?"},
+            ]
+        )
+    ]
+
+    assert chunks == [
+        "Grounded answer. [1]",
+        ("__usage__", {"promptTokens": 120, "completionTokens": 30, "totalTokens": 150}),
+    ]
+    assert messages.calls[0]["system"] == "You are grounded.\n\nCite your sources."
+    assert messages.calls[0]["messages"] == [{"role": "user", "content": "Question?"}]
 
 
 async def test_anthropic_client_maps_messages_and_usage():
