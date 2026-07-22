@@ -58,7 +58,7 @@ async def test_provider_probes_are_cached_per_interval(monkeypatch):
     monkeypatch.setenv("PROVIDER_PROBE_INTERVAL_SECONDS", "60")
     from app.config import Settings
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
     health._provider_cache.clear()
 
     calls = {"count": 0}
@@ -88,7 +88,7 @@ async def test_health_body_reports_providers_and_degraded_status(monkeypatch):
     monkeypatch.setenv("PROVIDER_PROBE_ENABLED", "true")
     from app.config import Settings
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
     health._provider_cache.clear()
 
     async def fake_probe(name, url, headers, probe_timeout):
@@ -119,4 +119,4 @@ async def test_probes_disabled_returns_empty(monkeypatch):
     monkeypatch.setenv("PROVIDER_PROBE_ENABLED", "false")
     from app.config import Settings
 
-    assert await health.check_providers(Settings()) == {}
+    assert await health.check_providers(Settings(_env_file=None)) == {}
