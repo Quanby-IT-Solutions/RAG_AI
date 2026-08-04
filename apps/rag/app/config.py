@@ -105,6 +105,25 @@ class Settings(BaseSettings):
     strong_model_provider: Literal["openai", "anthropic"] = Field(
         alias="STRONG_MODEL_PROVIDER", default="anthropic"
     )
+    # Optional tertiary failover. It never receives normal routing traffic.
+    watsonx_enabled: bool = Field(alias="WATSONX_ENABLED", default=False)
+    ibm_cloud_api_key: SecretStr | None = Field(alias="IBM_CLOUD_API_KEY", default=None)
+    watsonx_project_id: SecretStr | None = Field(
+        alias="WATSONX_PROJECT_ID", default=None
+    )
+    watsonx_url: str = Field(
+        alias="WATSONX_URL",
+        default="https://jp-tok.ml.cloud.ibm.com",
+        min_length=1,
+    )
+    watsonx_model: str = Field(
+        alias="WATSONX_MODEL",
+        default="meta-llama/llama-4-maverick-17b-128e-instruct-fp8",
+        min_length=1,
+    )
+    watsonx_api_version: str = Field(
+        alias="WATSONX_API_VERSION", default="2024-03-14", min_length=1
+    )
     # Anthropic's Messages API requires max_tokens; also caps answer length.
     generation_max_tokens: int = Field(alias="GENERATION_MAX_TOKENS", default=2048, ge=1)
     # Route strong when the query is at least this many characters...
@@ -178,6 +197,7 @@ class Settings(BaseSettings):
     provider_bucket_enabled: bool = Field(alias="PROVIDER_BUCKET_ENABLED", default=True)
     provider_rpm_openai: int = Field(alias="PROVIDER_RPM_OPENAI", default=300, ge=1)
     provider_rpm_anthropic: int = Field(alias="PROVIDER_RPM_ANTHROPIC", default=60, ge=1)
+    provider_rpm_watsonx: int = Field(alias="PROVIDER_RPM_WATSONX", default=60, ge=1)
     bucket_window_seconds: int = Field(alias="BUCKET_WINDOW_SECONDS", default=10, ge=1)
     bucket_wait_timeout_seconds: float = Field(
         alias="BUCKET_WAIT_TIMEOUT_SECONDS", default=20.0, gt=0
@@ -323,6 +343,30 @@ class Settings(BaseSettings):
     external_call_timeout_seconds: float = Field(
         alias="EXTERNAL_CALL_TIMEOUT_SECONDS", default=30.0, gt=0
     )
+
+    @model_validator(mode="after")
+    def _require_watsonx_configuration_when_enabled(self) -> Self:
+        if not self.watsonx_enabled:
+            return self
+        if (
+            self.ibm_cloud_api_key is None
+            or not self.ibm_cloud_api_key.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "IBM_CLOUD_API_KEY is required when WATSONX_ENABLED=true"
+            )
+        if (
+            self.watsonx_project_id is None
+            or not self.watsonx_project_id.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "WATSONX_PROJECT_ID is required when WATSONX_ENABLED=true"
+            )
+        if not self.watsonx_url.startswith("https://"):
+            raise ValueError(
+                "WATSONX_URL must use https:// when WATSONX_ENABLED=true"
+            )
+        return self
 
     @model_validator(mode="after")
     def _expand_rag_profile(self) -> Self:

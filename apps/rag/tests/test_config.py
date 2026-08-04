@@ -6,7 +6,19 @@ from tests.conftest import REQUIRED_ENV
 
 
 def _clear_env(monkeypatch):
-    for key in (*REQUIRED_ENV, "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "TRACING_PROVIDER"):
+    for key in (
+        *REQUIRED_ENV,
+        "EMBEDDING_MODEL",
+        "EMBEDDING_DIMENSIONS",
+        "TRACING_PROVIDER",
+        "WATSONX_ENABLED",
+        "IBM_CLOUD_API_KEY",
+        "WATSONX_PROJECT_ID",
+        "WATSONX_URL",
+        "WATSONX_MODEL",
+        "WATSONX_API_VERSION",
+        "PROVIDER_RPM_WATSONX",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -46,6 +58,84 @@ def test_invalid_embedding_dimensions_rejected(monkeypatch):
 def test_pinned_embedding_defaults(settings):
     assert settings.embedding_model == "text-embedding-3-large"
     assert settings.embedding_dimensions == 1536
+
+
+def test_watsonx_disabled_requires_no_credentials(monkeypatch):
+    _clear_env(monkeypatch)
+    settings = Settings(_env_file=None, WATSONX_ENABLED="false", **REQUIRED_ENV)
+    assert settings.watsonx_enabled is False
+    assert settings.ibm_cloud_api_key is None
+    assert settings.watsonx_project_id is None
+
+
+@pytest.mark.parametrize(
+    ("override", "missing"),
+    [
+        ({"WATSONX_PROJECT_ID": "project"}, "IBM_CLOUD_API_KEY"),
+        ({"IBM_CLOUD_API_KEY": "secret"}, "WATSONX_PROJECT_ID"),
+    ],
+)
+def test_watsonx_enabled_names_missing_required_setting(
+    monkeypatch, override, missing
+):
+    _clear_env(monkeypatch)
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(
+            _env_file=None,
+            WATSONX_ENABLED="true",
+            **override,
+            **REQUIRED_ENV,
+        )
+    assert missing in str(excinfo.value)
+
+
+def test_watsonx_enabled_uses_quality_first_tokyo_defaults(monkeypatch):
+    _clear_env(monkeypatch)
+    settings = Settings(
+        _env_file=None,
+        WATSONX_ENABLED="true",
+        IBM_CLOUD_API_KEY="secret",
+        WATSONX_PROJECT_ID="project",
+        **REQUIRED_ENV,
+    )
+    assert settings.watsonx_url == "https://jp-tok.ml.cloud.ibm.com"
+    assert settings.watsonx_api_version == "2024-03-14"
+    assert settings.watsonx_model == (
+        "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
+    )
+    assert settings.provider_rpm_watsonx == 60
+
+
+@pytest.mark.parametrize("setting", ["IBM_CLOUD_API_KEY", "WATSONX_PROJECT_ID"])
+def test_watsonx_enabled_rejects_blank_credentials(monkeypatch, setting):
+    _clear_env(monkeypatch)
+    values = {
+        "IBM_CLOUD_API_KEY": "secret",
+        "WATSONX_PROJECT_ID": "project",
+        setting: "   ",
+    }
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(
+            _env_file=None,
+            WATSONX_ENABLED="true",
+            **values,
+            **REQUIRED_ENV,
+        )
+    assert setting in str(excinfo.value)
+
+
+def test_watsonx_enabled_rejects_non_https_url(monkeypatch):
+    _clear_env(monkeypatch)
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(
+            _env_file=None,
+            WATSONX_ENABLED="true",
+            IBM_CLOUD_API_KEY="secret",
+            WATSONX_PROJECT_ID="project",
+            WATSONX_URL="http://jp-tok.ml.cloud.ibm.com",
+            **REQUIRED_ENV,
+        )
+    assert "WATSONX_URL" in str(excinfo.value)
 
 
 # --- CE-0: RAG_PROFILE presets + feature-flag spine ---
