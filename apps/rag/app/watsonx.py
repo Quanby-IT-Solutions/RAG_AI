@@ -5,6 +5,7 @@ surface directly. Provider response bodies are never rendered in exceptions.
 """
 
 import asyncio
+import json
 import re
 import time
 from typing import Any
@@ -213,6 +214,92 @@ class WatsonxChatClient:
                 f"Watsonx returned an empty completion (model={self.model})"
             )
         return text, self._usage(payload.get("usage"))
+
+    async def _stream_once(
+        self, messages: list[dict[str, str]], *, refreshed: bool
+    ) -> Any:
+        token = await self._tokens.get_token(force_refresh=refreshed)
+        manager = self._http.stream(
+            "POST",
+            self._url("/ml/v1/text/chat_stream"),
+            headers={
+                "accept": "text/event-stream",
+                "authorization": f"Bearer {token}",
+                "content-type": "application/json",
+            },
+            json=self._body(messages),
+        )
+        response: Any = None
+        token_usage: dict[str, int] | None = None
+        retry_with_fresh_token = False
+        try:
+            response = await with_hard_timeout(
+                manager.__aenter__(),
+                seconds=self._settings.external_call_timeout_seconds,
+                operation="watsonx.chat_stream",
+            )
+            if response.status_code == 401 and not refreshed:
+                self._tokens.invalidate()
+                retry_with_fresh_token = True
+            elif response.status_code != 200:
+                payload = _safe_response_payload(response)
+                raise WatsonxApiError(
+                    "chat_stream",
+                    response.status_code,
+                    _safe_error_code(payload),
+                )
+            else:
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload_text = line[5:].strip()
+                    if not payload_text or payload_text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(payload_text)
+                    except (TypeError, ValueError) as exc:
+                        raise WatsonxApiError(
+                            "chat_stream", 502, "malformed_sse"
+                        ) from exc
+                    if not isinstance(event, dict):
+                        raise WatsonxApiError(
+                            "chat_stream", 502, "malformed_sse"
+                        )
+                    usage = event.get("usage")
+                    if usage:
+                        token_usage = self._usage(usage)
+                    choices = event.get("choices")
+                    if not isinstance(choices, list):
+                        continue
+                    for choice in choices:
+                        if not isinstance(choice, dict):
+                            continue
+                        delta = choice.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
+                            yield content
+        finally:
+            if response is not None:
+                await manager.__aexit__(None, None, None)
+        if retry_with_fresh_token:
+            retry_stream = self._stream_once(messages, refreshed=True)
+            try:
+                async for item in retry_stream:
+                    yield item
+            finally:
+                await retry_stream.aclose()
+            return
+        yield ("__usage__", token_usage)
+
+    async def stream(self, messages: list[dict[str, str]]) -> Any:
+        provider_stream = self._stream_once(messages, refreshed=False)
+        try:
+            async for item in provider_stream:
+                yield item
+        finally:
+            await provider_stream.aclose()
 
     async def aclose(self) -> None:
         if self._owns_http:

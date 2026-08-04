@@ -279,3 +279,190 @@ async def test_provider_error_never_exposes_response_details(watsonx_settings):
     assert "status=403" in rendered
     assert "code=user_authorization_failed" in rendered
     assert all(value not in rendered for value in sensitive)
+
+
+class FakeStreamResponse:
+    def __init__(
+        self, status_code: int, lines: list[str], payload: dict | None = None
+    ):
+        self.status_code = status_code
+        self._lines = lines
+        self._payload = payload or {}
+        self.closed = False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeStreamManager:
+    def __init__(self, response: FakeStreamResponse):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        self.response.closed = True
+
+
+class FailingAfterDeltaResponse(FakeStreamResponse):
+    async def aiter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
+        raise ConnectionError("stream interrupted")
+
+
+class FakeStreamingHttpClient(FakeHttpClient):
+    def __init__(self, responses: list[FakeStreamResponse]):
+        super().__init__([])
+        self.stream_responses = list(responses)
+        self.stream_calls: list[dict] = []
+
+    def stream(self, method: str, url: str, **kwargs):
+        self.stream_calls.append({"method": method, "url": url, **kwargs})
+        return FakeStreamManager(self.stream_responses.pop(0))
+
+
+async def test_stream_maps_sse_deltas_and_usage(watsonx_settings):
+    response = FakeStreamResponse(
+        200,
+        [
+            'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+            'data: {"choices":[{"delta":{"content":"Grounded "}}]}',
+            'data: {"choices":[{"delta":{"content":"answer [1]."}}]}',
+            (
+                'data: {"choices":[],"usage":{"prompt_tokens":20,'
+                '"completion_tokens":5,"total_tokens":25}}'
+            ),
+            "data: [DONE]",
+        ],
+    )
+    http = FakeStreamingHttpClient([response])
+    client = WatsonxChatClient(
+        watsonx_settings, client=http, tokens=StubTokens(["token"])
+    )
+
+    items = [
+        item
+        async for item in client.stream([{"role": "user", "content": "q"}])
+    ]
+
+    assert items == [
+        "Grounded ",
+        "answer [1].",
+        (
+            "__usage__",
+            {"promptTokens": 20, "completionTokens": 5, "totalTokens": 25},
+        ),
+    ]
+    assert response.closed is True
+
+
+async def test_stream_close_closes_provider_response(watsonx_settings):
+    response = FakeStreamResponse(
+        200,
+        [
+            'data: {"choices":[{"delta":{"content":"first"}}]}',
+            'data: {"choices":[{"delta":{"content":"second"}}]}',
+        ],
+    )
+    client = WatsonxChatClient(
+        watsonx_settings,
+        client=FakeStreamingHttpClient([response]),
+        tokens=StubTokens(["token"]),
+    )
+    stream = client.stream([{"role": "user", "content": "q"}])
+
+    assert await anext(stream) == "first"
+    await stream.aclose()
+
+    assert response.closed is True
+
+
+async def test_stream_rejects_malformed_sse_without_echoing_payload(
+    watsonx_settings,
+):
+    sensitive_payload = "not-json-iam-secret"
+    response = FakeStreamResponse(200, [f"data: {sensitive_payload}"])
+    client = WatsonxChatClient(
+        watsonx_settings,
+        client=FakeStreamingHttpClient([response]),
+        tokens=StubTokens(["token"]),
+    )
+
+    with pytest.raises(WatsonxApiError) as excinfo:
+        _ = [
+            item
+            async for item in client.stream(
+                [{"role": "user", "content": "q"}]
+            )
+        ]
+
+    assert excinfo.value.code == "malformed_sse"
+    assert sensitive_payload not in str(excinfo.value)
+    assert response.closed is True
+
+
+async def test_stream_refreshes_once_on_401_before_deltas(watsonx_settings):
+    denied = FakeStreamResponse(
+        401, [], {"errors": [{"code": "authentication_token_not_valid"}]}
+    )
+    success = FakeStreamResponse(
+        200, ['data: {"choices":[{"delta":{"content":"ok"}}]}']
+    )
+    tokens = StubTokens(["expired", "fresh"])
+    http = FakeStreamingHttpClient([denied, success])
+    client = WatsonxChatClient(watsonx_settings, client=http, tokens=tokens)
+
+    items = [
+        item
+        async for item in client.stream([{"role": "user", "content": "q"}])
+    ]
+
+    assert items == ["ok", ("__usage__", None)]
+    assert tokens.forced_refreshes == 1
+    assert len(http.stream_calls) == 2
+    assert denied.closed is True
+    assert success.closed is True
+
+
+async def test_stream_does_not_retry_second_401(watsonx_settings):
+    first = FakeStreamResponse(401, [], {"errors": [{"code": "first"}]})
+    second = FakeStreamResponse(401, [], {"errors": [{"code": "second"}]})
+    tokens = StubTokens(["expired", "still-expired"])
+    http = FakeStreamingHttpClient([first, second])
+    client = WatsonxChatClient(watsonx_settings, client=http, tokens=tokens)
+
+    with pytest.raises(WatsonxApiError) as excinfo:
+        _ = [
+            item
+            async for item in client.stream(
+                [{"role": "user", "content": "q"}]
+            )
+        ]
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.code == "second"
+    assert tokens.forced_refreshes == 1
+    assert len(http.stream_calls) == 2
+    assert first.closed is True
+    assert second.closed is True
+
+
+async def test_stream_does_not_retry_after_emitting_delta(watsonx_settings):
+    response = FailingAfterDeltaResponse(200, [])
+    tokens = StubTokens(["token"])
+    http = FakeStreamingHttpClient([response])
+    client = WatsonxChatClient(watsonx_settings, client=http, tokens=tokens)
+    stream = client.stream([{"role": "user", "content": "q"}])
+
+    assert await anext(stream) == "partial"
+    with pytest.raises(ConnectionError, match="stream interrupted"):
+        await anext(stream)
+
+    assert len(http.stream_calls) == 1
+    assert tokens.forced_refreshes == 0
+    assert response.closed is True
