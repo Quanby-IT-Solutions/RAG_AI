@@ -116,6 +116,9 @@ lerna-debug.log*
 .temp
 .tmp
 
+# Local isolated feature worktrees
+/.worktrees/
+
 # Runtime data
 pids
 *.pid
