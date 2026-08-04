@@ -230,6 +230,9 @@ async def test_config_endpoint_masks_every_secret_by_type(settings):
         "ANTHROPIC_API_KEY": "sk-ant-super-secret",
         "COHERE_API_KEY": "co-super-secret",
         "LANGSMITH_API_KEY": "ls-super-secret",
+        "WATSONX_ENABLED": "true",
+        "IBM_CLOUD_API_KEY": "ibm-super-secret",
+        "WATSONX_PROJECT_ID": "private-project",
         "DATABASE_URL": "postgres://postgres:dbpassword@localhost:5432/turbo-template",
     }
     app = create_app(settings(**secret_values))
@@ -246,9 +249,16 @@ async def test_config_endpoint_masks_every_secret_by_type(settings):
     assert response.status_code == 200
     body = response.text
     # Response-shape AC: NO unmasked secret ever leaves the server.
-    for value in ("sk-super-secret-openai", "sk-ant-super-secret",
-                  "co-super-secret", "ls-super-secret", "dbpassword",
-                  "test-service-secret"):
+    for value in (
+        "sk-super-secret-openai",
+        "sk-ant-super-secret",
+        "co-super-secret",
+        "ls-super-secret",
+        "ibm-super-secret",
+        "private-project",
+        "dbpassword",
+        "test-service-secret",
+    ):
         assert value not in body
 
     payload = response.json()
@@ -257,6 +267,10 @@ async def test_config_endpoint_masks_every_secret_by_type(settings):
     providers = {entry["key"]: entry for entry in groups["providers"]}
     assert providers["openai_api_key"]["secret"] is True
     assert providers["openai_api_key"]["value"] == "••••••••"
+    assert providers["ibm_cloud_api_key"]["secret"] is True
+    assert providers["ibm_cloud_api_key"]["value"] == "••••••••"
+    assert providers["watsonx_project_id"]["secret"] is True
+    assert providers["watsonx_project_id"]["value"] == "••••••••"
     retrieval_keys = {entry["key"] for entry in groups["retrieval"]}
     assert "retrieval_vector_weight" in retrieval_keys
     caching_keys = {entry["key"] for entry in groups["caching"]}

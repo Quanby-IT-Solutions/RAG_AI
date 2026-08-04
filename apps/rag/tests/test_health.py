@@ -193,3 +193,121 @@ async def test_probes_disabled_returns_empty(monkeypatch):
     from app.config import Settings
 
     assert await health.check_providers(Settings(_env_file=None)) == {}
+
+
+async def test_watsonx_health_is_absent_when_disabled(monkeypatch):
+    import app.health as health
+    from app.config import Settings
+    from tests.conftest import REQUIRED_ENV
+
+    settings = Settings(
+        _env_file=None,
+        WATSONX_ENABLED="false",
+        **{**REQUIRED_ENV, "PROVIDER_PROBE_ENABLED": "true"},
+    )
+    health._provider_cache.clear()
+
+    async def fake_probe(name, url, headers, probe_timeout):
+        assert name == "openai"
+        return "up"
+
+    monkeypatch.setattr(health, "_probe_provider", fake_probe)
+    results = await health.check_providers(settings)
+
+    assert results == {"openai": "up"}
+    assert "watsonx" not in health._provider_cache
+
+
+async def test_watsonx_health_is_cached_when_enabled(monkeypatch):
+    import app.health as health
+    from app.config import Settings
+    from tests.conftest import REQUIRED_ENV
+
+    settings = Settings(
+        _env_file=None,
+        WATSONX_ENABLED="true",
+        IBM_CLOUD_API_KEY="ibm-test",
+        WATSONX_PROJECT_ID="project",
+        **{**REQUIRED_ENV, "PROVIDER_PROBE_ENABLED": "true"},
+    )
+    health._provider_cache.clear()
+    health._provider_cache["openai"] = ("up", float("inf"))
+    calls = {"tokens": 0, "probes": 0, "closes": 0}
+
+    class FakeTokens:
+        async def get_token(self):
+            calls["tokens"] += 1
+            return "iam-token"
+
+        async def aclose(self):
+            calls["closes"] += 1
+
+    async def fake_probe(name, url, headers, probe_timeout):
+        calls["probes"] += 1
+        assert name == "watsonx"
+        assert "/ml/v1/foundation_model_specs" in url
+        assert headers == {"authorization": "Bearer iam-token"}
+        return "up"
+
+    monkeypatch.setattr(
+        health, "WatsonxIamTokenProvider", lambda _settings: FakeTokens()
+    )
+    monkeypatch.setattr(health, "_probe_provider", fake_probe)
+    first = await health.check_providers(settings)
+    second = await health.check_providers(settings)
+
+    assert first["watsonx"] == second["watsonx"] == "up"
+    assert calls == {"tokens": 1, "probes": 1, "closes": 1}
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(
+            "unauthorized-401", "unauthorized", id="iam-unauthorized-401"
+        ),
+        pytest.param(
+            "unauthorized-403", "unauthorized", id="iam-unauthorized-403"
+        ),
+        pytest.param("server-error", "down", id="iam-server-error"),
+        pytest.param("offline", "down", id="iam-offline"),
+    ],
+)
+async def test_watsonx_health_maps_token_failures(
+    monkeypatch, error, expected
+):
+    import app.health as health
+    from app.config import Settings
+    from app.watsonx import WatsonxApiError
+    from tests.conftest import REQUIRED_ENV
+
+    failures = {
+        "unauthorized-401": WatsonxApiError("iam_token", 401, "invalid"),
+        "unauthorized-403": WatsonxApiError("iam_token", 403, "forbidden"),
+        "server-error": WatsonxApiError("iam_token", 500, "server_error"),
+        "offline": ConnectionError("offline"),
+    }
+    settings = Settings(
+        _env_file=None,
+        WATSONX_ENABLED="true",
+        IBM_CLOUD_API_KEY="ibm-test",
+        WATSONX_PROJECT_ID="project",
+        **{**REQUIRED_ENV, "PROVIDER_PROBE_ENABLED": "true"},
+    )
+    health._provider_cache.clear()
+    health._provider_cache["openai"] = ("up", float("inf"))
+
+    class FailingTokens:
+        async def get_token(self):
+            raise failures[error]
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        health, "WatsonxIamTokenProvider", lambda _settings: FailingTokens()
+    )
+
+    results = await health.check_providers(settings)
+
+    assert results["watsonx"] == expected

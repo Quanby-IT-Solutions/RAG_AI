@@ -23,6 +23,8 @@ _GROUPS: list[tuple[str, str]] = [
     ("openai_api_key", "providers"),
     ("anthropic_api_key", "providers"),
     ("cohere_api_key", "providers"),
+    ("ibm_cloud_api_key", "providers"),
+    ("watsonx_", "providers"),
     ("rag_service_token_secret", "security"),
     ("tracing_", "observability"),
     ("langsmith_", "observability"),

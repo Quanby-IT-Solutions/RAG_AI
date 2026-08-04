@@ -184,6 +184,14 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - STRONG_MODEL=${STRONG_MODEL:-claude-opus-4-8}
       - STRONG_MODEL_PROVIDER=${STRONG_MODEL_PROVIDER:-anthropic}
+      # Optional tertiary failover. Defaults off, so no IBM calls are made.
+      - WATSONX_ENABLED=${WATSONX_ENABLED:-false}
+      - IBM_CLOUD_API_KEY=${IBM_CLOUD_API_KEY:-}
+      - WATSONX_PROJECT_ID=${WATSONX_PROJECT_ID:-}
+      - WATSONX_URL=${WATSONX_URL:-https://jp-tok.ml.cloud.ibm.com}
+      - WATSONX_MODEL=${WATSONX_MODEL:-meta-llama/llama-4-maverick-17b-128e-instruct-fp8}
+      - WATSONX_API_VERSION=${WATSONX_API_VERSION:-2024-03-14}
+      - PROVIDER_RPM_WATSONX=${PROVIDER_RPM_WATSONX:-60}
       - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
       # Tracing (LangSmith default; set TRACING_PROVIDER=langfuse to switch)
       - TRACING_PROVIDER=${TRACING_PROVIDER:-langsmith}
@@ -240,6 +248,13 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - STRONG_MODEL=${STRONG_MODEL:-claude-opus-4-8}
       - STRONG_MODEL_PROVIDER=${STRONG_MODEL_PROVIDER:-anthropic}
+      - WATSONX_ENABLED=${WATSONX_ENABLED:-false}
+      - IBM_CLOUD_API_KEY=${IBM_CLOUD_API_KEY:-}
+      - WATSONX_PROJECT_ID=${WATSONX_PROJECT_ID:-}
+      - WATSONX_URL=${WATSONX_URL:-https://jp-tok.ml.cloud.ibm.com}
+      - WATSONX_MODEL=${WATSONX_MODEL:-meta-llama/llama-4-maverick-17b-128e-instruct-fp8}
+      - WATSONX_API_VERSION=${WATSONX_API_VERSION:-2024-03-14}
+      - PROVIDER_RPM_WATSONX=${PROVIDER_RPM_WATSONX:-60}
       - RAG_SERVICE_TOKEN_SECRET=${RAG_SERVICE_TOKEN_SECRET:-dev-rag-service-secret-change-in-production}
       - TRACING_PROVIDER=${TRACING_PROVIDER:-langsmith}
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}

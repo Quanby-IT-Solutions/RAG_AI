@@ -195,6 +195,13 @@ infrastructure.
 | `COMPOSE_PROFILES`            | ❌       | Root/Docker | `docker-proxy` runs bundled Nginx; empty = external proxy |
 | `REDIS_URL`                   | ✅       | RAG         | Redis connection string               |
 | `OPENAI_API_KEY`              | ✅       | RAG         | OpenAI API key (embeddings + chat)    |
+| `WATSONX_ENABLED`             | ❌       | RAG         | Enables IBM as tertiary chat failover (default: false) |
+| `IBM_CLOUD_API_KEY`           | ❌       | RAG         | Required only when Watsonx is enabled |
+| `WATSONX_PROJECT_ID`          | ❌       | RAG         | Project with an associated Watsonx Runtime service |
+| `WATSONX_URL`                 | ❌       | RAG         | Regional endpoint (default: Tokyo)    |
+| `WATSONX_MODEL`               | ❌       | RAG         | IBM fallback model ID                 |
+| `WATSONX_API_VERSION`         | ❌       | RAG         | IBM REST API version                  |
+| `PROVIDER_RPM_WATSONX`        | ❌       | RAG         | Shared Watsonx request budget         |
 | `RAG_SERVICE_TOKEN_SECRET`    | ✅       | Backend, RAG | Shared HS256 secret for the service JWT |
 | `RAG_SERVICE_URL`             | ✅       | Backend     | Internal RAG base URL (`http://rag:8000` in Docker) |
 | `LANGSMITH_API_KEY`           | ✅       | RAG         | Tracing key (or Langfuse keys with `TRACING_PROVIDER=langfuse`) |
@@ -207,6 +214,22 @@ Copy from `.env.example` in each app: `apps/backend/.env`, `apps/web/.env`, `pac
 **Single port (Docker proxy):** `NEXT_PUBLIC_APP_URL=http://localhost`,
 `NEXT_PUBLIC_API_BASE_URL=http://localhost/api` (set in the root `.env`; baked
 into the web image at build time).
+
+### Optional IBM watsonx.ai fallback
+
+Watsonx is an optional tertiary chat failover only. Normal routing remains
+OpenAI for the cheap/default tier and Anthropic for the strong tier; OpenAI
+also remains the required embeddings provider. When both normal provider
+circuits are unavailable, the reliability router may select Watsonx. Setting
+`WATSONX_ENABLED=false` makes no IBM requests.
+
+The default regional endpoint is `https://jp-tok.ml.cloud.ibm.com`, with
+`meta-llama/llama-4-maverick-17b-128e-instruct-fp8` as the quality-first
+fallback model. Before enabling it, associate an IBM watsonx.ai Runtime service
+with the project and add the API key's service ID as a project collaborator.
+Store production credentials in your deployment secret manager, never in a
+tracked `.env` file. The example environment files contain the complete,
+disabled-by-default configuration contract.
 
 ## Scripts
 

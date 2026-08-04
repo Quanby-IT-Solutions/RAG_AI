@@ -14,6 +14,7 @@ import redis.asyncio as aioredis
 
 from app.config import Settings
 from app.timeouts import with_hard_timeout
+from app.watsonx import WatsonxApiError, WatsonxIamTokenProvider
 
 # provider -> (status, checked_at_monotonic)
 _provider_cache: dict[str, tuple[str, float]] = {}
@@ -101,4 +102,38 @@ async def check_providers(settings: Settings) -> dict[str, str]:
         )
         _provider_cache[name] = (status, now)
         results[name] = status
+
+    if settings.watsonx_enabled:
+        cached = _provider_cache.get("watsonx")
+        if cached is not None and now - cached[1] < interval:
+            results["watsonx"] = cached[0]
+        else:
+            tokens: WatsonxIamTokenProvider | None = None
+            try:
+                tokens = WatsonxIamTokenProvider(settings)
+                token = await tokens.get_token()
+                catalog_url = (
+                    f"{settings.watsonx_url.rstrip('/')}"
+                    "/ml/v1/foundation_model_specs"
+                    f"?version={settings.watsonx_api_version}&limit=1"
+                )
+                status = await _probe_provider(
+                    "watsonx",
+                    catalog_url,
+                    {"authorization": f"Bearer {token}"},
+                    settings.provider_probe_timeout_seconds,
+                )
+            except WatsonxApiError as exc:
+                status = (
+                    "unauthorized"
+                    if exc.status_code in (401, 403)
+                    else "down"
+                )
+            except Exception:
+                status = "down"
+            finally:
+                if tokens is not None:
+                    await tokens.aclose()
+            _provider_cache["watsonx"] = (status, now)
+            results["watsonx"] = status
     return results
