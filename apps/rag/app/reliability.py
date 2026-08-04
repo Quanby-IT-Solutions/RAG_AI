@@ -259,6 +259,10 @@ class ReliabilityRouter:
             if inner.strong is not None
             else None
         )
+        self.fallbacks = [
+            ReliableChatClient(client, breaker=breaker, settings=settings)
+            for client in inner.fallbacks
+        ]
         self._inner = inner
 
     async def route(
@@ -272,11 +276,11 @@ class ReliabilityRouter:
             decision["breaker"] = await self._breaker.state(selected.provider)
             return selected, decision
 
-        # Circuit open on the selected provider: fail over to the OTHER
-        # configured provider without waiting for timeouts.
+        # Circuit open on the selected provider: consult normal alternatives
+        # first, then ordered tertiary fallbacks, without waiting for timeouts.
         alternates = [
             client
-            for client in (self.cheap, self.strong)
+            for client in (self.cheap, self.strong, *self.fallbacks)
             if client is not None and client.provider != selected.provider
         ]
         for alternate in alternates:

@@ -192,6 +192,16 @@ def test_build_provider_bucket_respects_the_toggle(settings):
     assert build_provider_bucket(config, FakeRedis()) is not None
 
 
+def test_bucket_uses_watsonx_specific_rpm(settings):
+    config = settings(PROVIDER_RPM_WATSONX="17")
+    assert ProviderBucket(config, FakeRedis())._rpm("watsonx") == 17
+
+
+def test_bucket_rejects_unknown_provider(settings):
+    with pytest.raises(ValueError, match="unknown provider"):
+        ProviderBucket(settings(), FakeRedis())._rpm("mystery")
+
+
 async def test_waiting_caller_proceeds_in_the_next_window(settings):
     # 1-second windows so the waiter crosses a boundary quickly.
     config = settings(

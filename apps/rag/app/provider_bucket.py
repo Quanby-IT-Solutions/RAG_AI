@@ -46,11 +46,17 @@ class ProviderBucket:
         self._redis = redis_client
 
     def _rpm(self, provider: str) -> int:
-        return (
-            self._settings.provider_rpm_anthropic
-            if provider == "anthropic"
-            else self._settings.provider_rpm_openai
-        )
+        limits = {
+            "openai": self._settings.provider_rpm_openai,
+            "anthropic": self._settings.provider_rpm_anthropic,
+            "watsonx": self._settings.provider_rpm_watsonx,
+        }
+        try:
+            return limits[provider]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown provider for request budget: {provider}"
+            ) from exc
 
     async def _incr_metric(self, metric: str, provider: str) -> None:
         try:

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict
 
 from app.config import Settings
 from app.timeouts import with_hard_timeout
+from app.watsonx import WatsonxChatClient
 
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
@@ -240,10 +241,12 @@ class ModelRouter:
         *,
         cheap: ChatModelClient,
         strong: ChatModelClient | None,
+        fallbacks: list[ChatModelClient] | None = None,
     ) -> None:
         self._settings = settings
         self.cheap = cheap
         self.strong = strong
+        self.fallbacks = list(fallbacks or [])
 
     def route(
         self, *, query: str, chunks: list[dict[str, Any]]
@@ -316,14 +319,20 @@ def build_model_router(settings: Settings, bucket: Any = None) -> ModelRouter:
     GN-5 reliability layer (order: bucket → breaker → provider call)."""
     cheap: ChatModelClient = OpenAIChatClient(settings)
     strong: ChatModelClient | None = None
+    fallbacks: list[ChatModelClient] = []
     if settings.strong_model_provider == "anthropic" and settings.anthropic_api_key:
         strong = AnthropicChatClient(settings)
     elif settings.strong_model_provider == "openai":
         strong = OpenAIChatClient(settings, model=settings.strong_model)
+    if settings.watsonx_enabled:
+        fallbacks.append(WatsonxChatClient(settings))
     if bucket is not None:
         from app.provider_bucket import ThrottledChatClient
 
         cheap = ThrottledChatClient(cheap, bucket)
         if strong is not None:
             strong = ThrottledChatClient(strong, bucket)
-    return ModelRouter(settings, cheap=cheap, strong=strong)
+        fallbacks = [ThrottledChatClient(client, bucket) for client in fallbacks]
+    return ModelRouter(
+        settings, cheap=cheap, strong=strong, fallbacks=fallbacks
+    )

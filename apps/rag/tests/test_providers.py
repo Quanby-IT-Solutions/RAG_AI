@@ -14,6 +14,7 @@ from app.providers import (
     OpenAIChatClient,
     build_model_router,
 )
+from app.watsonx import WatsonxChatClient
 from tests.conftest import REQUIRED_ENV
 
 
@@ -139,6 +140,38 @@ def test_build_router_openai_strong_provider():
     assert isinstance(router.strong, OpenAIChatClient)
     assert router.strong.model == "gpt-4.1"
     assert router.strong.provider == "openai"
+
+
+def test_build_router_adds_watsonx_only_as_fallback():
+    settings = make_settings(
+        ANTHROPIC_API_KEY="sk-ant-test",
+        WATSONX_ENABLED="true",
+        IBM_CLOUD_API_KEY="ibm-test",
+        WATSONX_PROJECT_ID="project",
+    )
+    router = build_model_router(settings)
+
+    assert isinstance(router.cheap, OpenAIChatClient)
+    assert isinstance(router.strong, AnthropicChatClient)
+    assert len(router.fallbacks) == 1
+    assert isinstance(router.fallbacks[0], WatsonxChatClient)
+    assert router.fallbacks[0].provider == "watsonx"
+
+
+def test_watsonx_never_receives_normal_route():
+    settings = make_settings(
+        ANTHROPIC_API_KEY="sk-ant-test",
+        WATSONX_ENABLED="true",
+        IBM_CLOUD_API_KEY="ibm-test",
+        WATSONX_PROJECT_ID="project",
+    )
+    router = build_model_router(settings)
+
+    cheap, _ = router.route(query="short", chunks=[chunk(0.9)])
+    strong, _ = router.route(query="x" * 500, chunks=[chunk(0.9)])
+
+    assert cheap.provider == "openai"
+    assert strong.provider == "anthropic"
 
 
 # ------------------------------------------------- Anthropic client mapping

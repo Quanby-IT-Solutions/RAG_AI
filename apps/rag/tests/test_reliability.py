@@ -244,6 +244,11 @@ class StubStrong(FlakyClient):
     provider = "anthropic"
 
 
+class StubWatsonx(FlakyClient):
+    model = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
+    provider = "watsonx"
+
+
 async def test_open_circuit_routes_to_the_failover_provider_without_waiting():
     settings = make_settings(
         ANTHROPIC_API_KEY="sk-ant-test", BREAKER_FAILURE_THRESHOLD="1"
@@ -276,6 +281,86 @@ async def test_all_circuits_open_fails_fast_with_structured_error():
     client, decision = await router.route(query="short question", chunks=[])
     assert decision["reason"] == "all-breakers-open"
     # The returned client fails fast -> the generation layer degrades (B2).
+    with pytest.raises(BreakerOpenError):
+        await client.complete([])
+
+
+async def test_two_normal_circuits_open_route_to_watsonx():
+    settings = make_settings(BREAKER_FAILURE_THRESHOLD="1")
+    redis = FakeRedis()
+    breaker = CircuitBreaker(settings, redis=redis)
+    inner = ModelRouter(
+        settings,
+        cheap=FlakyClient(),
+        strong=StubStrong(),
+        fallbacks=[StubWatsonx()],
+    )
+    router = ReliabilityRouter(inner, breaker=breaker, settings=settings)
+    await breaker.record_failure("openai")
+    await breaker.record_failure("anthropic")
+
+    client, decision = await router.route(query="short", chunks=[])
+
+    assert client.provider == "watsonx"
+    assert decision["tier"] == "failover"
+    assert decision["provider"] == "watsonx"
+
+
+async def test_open_openai_prefers_anthropic_before_watsonx():
+    settings = make_settings(BREAKER_FAILURE_THRESHOLD="1")
+    redis = FakeRedis()
+    breaker = CircuitBreaker(settings, redis=redis)
+    inner = ModelRouter(
+        settings,
+        cheap=FlakyClient(),
+        strong=StubStrong(),
+        fallbacks=[StubWatsonx()],
+    )
+    router = ReliabilityRouter(inner, breaker=breaker, settings=settings)
+    await breaker.record_failure("openai")
+
+    client, decision = await router.route(query="short", chunks=[])
+
+    assert client.provider == "anthropic"
+    assert decision["tier"] == "failover"
+
+
+async def test_open_watsonx_is_skipped_when_normal_alternate_is_available():
+    settings = make_settings(BREAKER_FAILURE_THRESHOLD="1")
+    redis = FakeRedis()
+    breaker = CircuitBreaker(settings, redis=redis)
+    inner = ModelRouter(
+        settings,
+        cheap=FlakyClient(),
+        strong=StubStrong(),
+        fallbacks=[StubWatsonx()],
+    )
+    router = ReliabilityRouter(inner, breaker=breaker, settings=settings)
+    await breaker.record_failure("openai")
+    await breaker.record_failure("watsonx")
+
+    client, _ = await router.route(query="short", chunks=[])
+
+    assert client.provider == "anthropic"
+
+
+async def test_all_three_circuits_open_fails_fast():
+    settings = make_settings(BREAKER_FAILURE_THRESHOLD="1")
+    redis = FakeRedis()
+    breaker = CircuitBreaker(settings, redis=redis)
+    inner = ModelRouter(
+        settings,
+        cheap=FlakyClient(),
+        strong=StubStrong(),
+        fallbacks=[StubWatsonx()],
+    )
+    router = ReliabilityRouter(inner, breaker=breaker, settings=settings)
+    for provider in ("openai", "anthropic", "watsonx"):
+        await breaker.record_failure(provider)
+
+    client, decision = await router.route(query="short", chunks=[])
+
+    assert decision["reason"] == "all-breakers-open"
     with pytest.raises(BreakerOpenError):
         await client.complete([])
 
@@ -313,6 +398,7 @@ def test_every_external_call_module_uses_the_hard_timeout_helper():
         "jobs.py",
         "embeddings.py",
         "providers.py",
+        "watsonx.py",
     ]
     for name in external_modules:
         source = (app_dir / name).read_text(encoding="utf-8")
