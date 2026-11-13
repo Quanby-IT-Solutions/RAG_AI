@@ -1,9 +1,36 @@
 import { Logger, type INestApplication } from "@nestjs/common"
 import * as express from "express"
 
+import { parseOriginList } from "@repo/auth"
+
+import { forwardClientParseError } from "@/common/filters/client-request-error"
 import { env } from "@/config/env.config"
 
 const logger = new Logger("AppConfig")
+
+/**
+ * Largest request body the app will parse.
+ *
+ * Both parsers were unbounded, so any endpoint would buffer an arbitrarily
+ * large body into memory before a single line of application code ran — a
+ * memory-exhaustion path on every mutation route.
+ *
+ * 100kb is far above the largest legitimate payload this app accepts. The
+ * biggest is a support ticket's `concern` field, capped at 5000 characters by
+ * the contract (the cap is tighter); even as 4-byte UTF-8 that is ~20kb,
+ * leaving room for the rest of the body and generous headroom.
+ *
+ * Nginx is set to 1m rather than 100kb on purpose: the proxy limit counts the
+ * whole request, so matching the two exactly would let header size decide
+ * whether a legitimate body is rejected, and by the wrong layer. The gap means
+ * oversized junk dies at the edge while borderline requests get a coherent 413
+ * from the app.
+ *
+ * The value is a byte count, 100 KiB, which is what `express.json({ limit: "100kb" })`
+ * already enforced (`kb` is 1024). The parsers and the auth middleware both
+ * read this constant.
+ */
+export const MAX_REQUEST_BODY_SIZE = 100 * 1024
 
 /**
  * Configure body parser middleware for non-auth routes
@@ -12,9 +39,16 @@ const logger = new Logger("AppConfig")
  */
 function configureBodyParser(app: INestApplication): void {
 	const httpAdapter = app.getHttpAdapter()
-	httpAdapter.use(express.json())
-	httpAdapter.use(express.urlencoded({ extended: true }))
-	logger.log("Body parser middleware configured")
+	httpAdapter.use(express.json({ limit: MAX_REQUEST_BODY_SIZE }))
+	httpAdapter.use(express.urlencoded({ extended: true, limit: MAX_REQUEST_BODY_SIZE }))
+	// Directly after the parsers. Nest turns a JSON SyntaxError into
+	// BadRequestException and keeps the parser message; this hands the filter
+	// a plain error that still carries the client status and type.
+	httpAdapter.use(forwardClientParseError)
+	// 100 KiB. The label stays "100kb" — the same text this line logged when
+	// the constant was that string — so a request log never has to carry the
+	// raw byte count.
+	logger.log("Body parser middleware configured (limit: 100kb)")
 }
 
 /**
@@ -26,7 +60,10 @@ function configureBodyParser(app: INestApplication): void {
  * short-circuits matching requests, so CORS must come first.
  */
 export function configureCors(app: INestApplication): void {
-	const origins = env.CORS_ORIGINS.split(",").map(origin => origin.trim())
+	// The same parser @repo/auth uses for its trusted-origin list,
+	// so the two allowlists cannot drift. This one trimmed but did not drop
+	// empties, so a trailing comma produced an empty origin.
+	const origins = parseOriginList(env.CORS_ORIGINS)
 	app.enableCors({
 		origin: origins,
 		credentials: true,

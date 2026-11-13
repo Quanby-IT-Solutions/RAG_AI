@@ -1,4 +1,4 @@
-import type nodemailer from "nodemailer"
+import type { Transporter } from "nodemailer"
 
 /**
  * A fully-rendered email message ready to send.
@@ -13,12 +13,16 @@ export type MailMessage = {
 /**
  * Send an email through the given transport.
  *
- * On the dev transport (`jsonTransport`), the serialised message is logged so
- * developers can inspect the email content. Real SMTP errors propagate to the
- * caller.
+ * This used to write `info.message` — the entire serialized email,
+ * verification and password-reset links included — to stdout via `console.log`,
+ * outside Pino's redaction. The body stays out of the log.
+ *
+ * The dev transport still needs *some* signal that mail was produced, so the
+ * envelope is logged and the body is not. Real SMTP errors propagate to the
+ * caller, which sanitizes them before they reach a client.
  */
 export async function sendMail(
-	transporter: nodemailer.Transporter,
+	transporter: Transporter,
 	from: string,
 	message: MailMessage
 ): Promise<void> {
@@ -30,7 +34,15 @@ export async function sendMail(
 		text: message.text,
 	})
 
+	// `info.message` is only a string on the dev (`jsonTransport`) transport.
+	// Its presence is how we know mail was serialized rather than sent — the
+	// value itself is the credential-bearing payload and is never read.
 	if (typeof info?.message === "string") {
-		console.log("[mailer-dev]", info.message)
+		// eslint-disable-next-line no-console -- dev transport announces that mail was serialized, not sent
+		console.log(
+			`[mailer-dev] serialized (not sent) to=${message.to} subject=${JSON.stringify(
+				message.subject
+			)} — body and links withheld`
+		)
 	}
 }

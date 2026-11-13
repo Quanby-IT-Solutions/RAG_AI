@@ -2,7 +2,11 @@ import { randomUUID } from "crypto"
 import type { IncomingMessage, ServerResponse } from "http"
 import type { Options } from "pino-http"
 
+import { PINO_REDACT_PATHS, sanitizeLogQuery, sanitizeLogUrl } from "@repo/observability"
+
 import { env } from "@/config/env.config"
+import { sanitizeRequestId } from "@/utils/log-redaction"
+import { omitUnloggedRequestHeaders } from "@/utils/unlogged-request-headers"
 
 /**
  * Build the shared pino-http options used by BOTH:
@@ -32,15 +36,39 @@ export function buildPinoHttpOptions(overrides?: { autoLogging?: boolean }): Opt
 					},
 				}
 			: undefined,
+		// Logs must be shippable and retainable without becoming a
+		// credential store. Everything here is removed outright rather than
+		// masked, so no value survives in any sink.
 		redact: {
-			paths: [
-				"req.headers.authorization",
-				"req.headers.cookie",
-				"res.headers['set-cookie']",
-				"req.body.password",
-				"req.body.*.password",
-			],
+			// Spread: pino types `paths` as a mutable string[], the shared constant
+			// is readonly.
+			paths: [...PINO_REDACT_PATHS],
 			remove: true,
+		},
+		// `redact` cannot reach the query string, and reset/verification links are
+		// `?token=…` URLs. Strip them everywhere the query is emitted: `req.url`,
+		// the separately-serialized `req.query` object, and each custom message
+		// line below. Sanitizing only the URL leaves the token sitting in
+		// `req.query` right beside it.
+		// `req.id` (assigned by `genReqId` below) is the only request-id on the
+		// request line. The inbound `x-request-id` header is omitted rather than
+		// masked: when it was rejected it must not be stored, and when it was
+		// accepted it is already `req.id`. The response line still carries the
+		// echoed `X-Request-Id`, which is that assigned id.
+		//
+		// Done in the serializer, not via `redact`. The shared redact list is the
+		// credential set, and this header is not a credential. pino passes the
+		// live header map in, so the copy below is what keeps the request itself
+		// unchanged.
+		serializers: {
+			req(req: { url?: string; query?: unknown; headers?: object; [key: string]: unknown }) {
+				return {
+					...req,
+					url: sanitizeLogUrl(req.url),
+					query: sanitizeLogQuery(req.query),
+					...(req.headers ? { headers: omitUnloggedRequestHeaders(req.headers) } : {}),
+				}
+			},
 		},
 		// Request-id resolution order:
 		//  1. Reuse an id already attached to `req` by an earlier pino-http instance
@@ -53,16 +81,19 @@ export function buildPinoHttpOptions(overrides?: { autoLogging?: boolean }): Opt
 		genReqId: (req: IncomingMessage, res: ServerResponse) => {
 			// pino-http augments IncomingMessage with `id` (ReqId = string|number|object).
 			const existing = (req as { id?: unknown }).id
-			const inbound = req.headers["x-request-id"]
-			const id =
-				(existing != null ? String(existing) : undefined) ||
-				(Array.isArray(inbound) ? inbound[0] : inbound) ||
-				randomUUID()
+			// An inbound id is honoured only when it is safe to put in a log line
+			// or a response header. Anything else gets a fresh UUID
+			// rather than being rejected — a malformed correlation id is not a
+			// reason to fail a request.
+			const inbound = sanitizeRequestId(req.headers["x-request-id"])
+			const id = (existing != null ? String(existing) : undefined) || inbound || randomUUID()
 			res.setHeader("X-Request-Id", id)
 			return id
 		},
-		customReceivedMessage: req => `--> ${req.method} ${req.url}`,
-		customSuccessMessage: (req, res) => `<-- ${req.method} ${req.url} ${res.statusCode}`,
-		customErrorMessage: (req, res) => `<-- ${req.method} ${req.url} ${res.statusCode}`,
+		customReceivedMessage: req => `--> ${req.method} ${sanitizeLogUrl(req.url)}`,
+		customSuccessMessage: (req, res) =>
+			`<-- ${req.method} ${sanitizeLogUrl(req.url)} ${res.statusCode}`,
+		customErrorMessage: (req, res) =>
+			`<-- ${req.method} ${sanitizeLogUrl(req.url)} ${res.statusCode}`,
 	}
 }

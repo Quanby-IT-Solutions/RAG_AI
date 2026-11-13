@@ -40,7 +40,8 @@
 		"studio": "pnpm build && drizzle-kit studio",
 		"generate": "pnpm build && drizzle-kit generate",
 		"migrate": "pnpm build && drizzle-kit migrate",
-		"seed": "pnpm --filter @repo/contracts build && pnpm migrate && tsx src/seed.ts"
+		"seed": "pnpm --filter @repo/contracts build && pnpm migrate && tsx src/seed.ts",
+		"seed:e2e": "tsx src/seed-e2e-users.ts"
 	},
 	"dependencies": {
 		"@repo/contracts": "workspace:*",

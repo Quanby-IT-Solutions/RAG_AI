@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer"
+import nodemailer, { type Transporter } from "nodemailer"
 
 /**
  * SMTP configuration fields used to build a mail transport.
@@ -10,17 +10,40 @@ export type MailTransportOptions = {
 	smtpUser?: string
 	smtpPass?: string
 	smtpSecure?: boolean
+	/** Process environment name. Production refuses the dev fallback. */
+	nodeEnv?: string
+}
+
+/**
+ * Thrown when production boots without SMTP configured.
+ *
+ * Fail-closed boot: the previous behaviour silently swapped
+ * in `jsonTransport`, which never sends and never throws. Verification and
+ * password-reset mail was therefore accepted, serialized, printed, and dropped —
+ * so a production deployment could look healthy while no user could ever verify
+ * an address or recover an account, and every reset link was written to stdout.
+ */
+export class MissingSmtpConfigError extends Error {
+	constructor() {
+		super(
+			"SMTP_HOST is not set. Production refuses to start without a real mail transport: " +
+				"the development fallback serializes mail instead of sending it, so verification " +
+				"and password-reset links would be printed to stdout and never delivered. " +
+				"Set SMTP_HOST (and SMTP_PORT / SMTP_USER / SMTP_PASS as your provider requires)."
+		)
+		this.name = "MissingSmtpConfigError"
+	}
 }
 
 /**
  * Create a nodemailer transport.
  *
  * - When `smtpHost` is set, a real SMTP transport is created.
+ * - In production without `smtpHost`, boot fails (see {@link MissingSmtpConfigError}).
  * - Otherwise a dev transport (`jsonTransport`) is returned. It serialises the
- *   message to JSON without any network call, so it never throws. This is used
- *   in development where no SMTP server is configured.
+ *   message to JSON without any network call, so it never throws.
  */
-export function createTransport(opts: MailTransportOptions): nodemailer.Transporter {
+export function createTransport(opts: MailTransportOptions): Transporter {
 	if (opts.smtpHost) {
 		return nodemailer.createTransport({
 			host: opts.smtpHost,
@@ -37,8 +60,18 @@ export function createTransport(opts: MailTransportOptions): nodemailer.Transpor
 		})
 	}
 
+	if (opts.nodeEnv === "production") {
+		throw new MissingSmtpConfigError()
+	}
+
+	// Explicit, and deliberately loud about what it does NOT do. The message
+	// body is never printed — see `sendMail`, which logs only envelope metadata
+	// so a reset link cannot reach a log sink even in development.
+	// eslint-disable-next-line no-console -- dev transport announces itself when SMTP_HOST is unset
 	console.warn(
-		"[mailer] No SMTP configured (SMTP_HOST unset). Emails will be printed to console via dev transport."
+		"[mailer] SMTP_HOST is unset — using the development transport. Mail is serialized, " +
+			"NOT delivered. Message bodies and links are not logged; read them from your mail " +
+			"catcher or set SMTP_HOST to send for real."
 	)
 
 	return nodemailer.createTransport({ jsonTransport: true })

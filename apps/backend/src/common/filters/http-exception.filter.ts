@@ -1,4 +1,5 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException } from "@nestjs/common"
+import * as Sentry from "@sentry/nestjs"
 import { Logger } from "nestjs-pino"
 import { ZodSerializationException } from "nestjs-zod"
 import { ZodError } from "zod"
@@ -15,9 +16,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
 		const status = exception.getStatus()
 		const exceptionResponse = exception.getResponse()
 
+		// Capture 5xx only. 4xx (RBAC denials, throttler 429s, validation errors)
+		// are expected outcomes of a working system, not incidents — reporting them
+		// buries the real failures. This filter is the only place that sees
+		// deliberate 5xx `HttpException`s, so it captures them directly rather than
+		// relying on SentryExceptionFilter, which — per Nest's `@Catch(HttpException)`
+		// precedence — only ever sees non-HttpException failures. That split is what
+		// keeps a single error from being reported twice.
+		if (status >= 500) {
+			Sentry.captureException(exception)
+		}
+
 		// pino-http is the authoritative request/response logger, so we only emit
 		// EXTRA server-side diagnostics here (not a line per HttpException).
-		const requestId = request?.headers?.["x-request-id"]
+		const requestId = loggedRequestId(request as { id?: unknown } | undefined)
 
 		// Zod serialization failures carry structured detail (the Zod issue tree)
 		// that the standard pino-http log line does NOT capture, so we emit that
@@ -75,4 +87,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
 		// headers, so the 429 Retry-After passes through unchanged.
 		response.status(status).json(errorResponse)
 	}
+}
+
+/**
+ * The request id the logger assigned.
+ *
+ * `genReqId` stores that id on `request.id` and echoes it as `X-Request-Id`.
+ * The inbound header is not a fallback: when the client sent none, the field
+ * would be undefined, and a value the policy rejects must not be written into
+ * the log. No id means this path had no pino-http, so the field is null.
+ */
+function loggedRequestId(request: { id?: unknown } | null | undefined): string | null {
+	const id = request?.id
+	if (id === undefined || id === null) {
+		return null
+	}
+	return String(id)
 }

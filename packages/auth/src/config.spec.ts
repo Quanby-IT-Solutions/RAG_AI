@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const BASE_ENV: Record<string, string> = {
-	BETTER_AUTH_SECRET: "test-secret",
+	// Must satisfy authSecretSchema: >=32 chars and not a placeholder prefix.
+	BETTER_AUTH_SECRET: "test-secret-value-at-least-32-characters-long",
 	BETTER_AUTH_TRUSTED_ORIGINS: "http://localhost:3001",
 	DATABASE_URL: "postgres://postgres:password@localhost:5432/config-spec-test",
+}
+
+// The Google provider is registered only when both credentials are present, so
+// tests that assert its options supply them.
+const GOOGLE_ENV: Record<string, string> = {
+	GOOGLE_CLIENT_ID: "test-google-client-id",
+	GOOGLE_CLIENT_SECRET: "test-google-client-secret",
 }
 
 /**
@@ -46,7 +54,7 @@ describe("admin-provisioned sign-up policy", () => {
 	})
 
 	it("disables social sign-up (implicit and explicit) by default", async () => {
-		const { createAuth } = await loadConfig()
+		const { createAuth } = await loadConfig(GOOGLE_ENV)
 		const auth = createAuth()
 
 		expect(auth.options.socialProviders?.google?.disableSignUp).toBe(true)
@@ -54,7 +62,7 @@ describe("admin-provisioned sign-up policy", () => {
 	})
 
 	it("re-enables sign-up when AUTH_SIGN_UP_ENABLED=true", async () => {
-		const { createAuth } = await loadConfig({ AUTH_SIGN_UP_ENABLED: "true" })
+		const { createAuth } = await loadConfig({ ...GOOGLE_ENV, AUTH_SIGN_UP_ENABLED: "true" })
 		const auth = createAuth()
 
 		expect(auth.options.emailAndPassword?.disableSignUp).toBe(false)

@@ -27,6 +27,8 @@
 		"@orpc/tanstack-query": "^1.13.4",
 		"@repo/auth": "workspace:*",
 		"@repo/contracts": "workspace:*",
+		"@repo/observability": "workspace:*",
+		"@sentry/nextjs": "catalog:",
 		"@serwist/turbopack": "^9.5.11",
 		"@t3-oss/env-nextjs": "catalog:",
 		"@tanstack/query-async-storage-persister": "^5.90.16",
@@ -44,6 +46,7 @@
 		"input-otp": "^1.4.2",
 		"next": "catalog:",
 		"next-themes": "^0.4.6",
+		"posthog-js": "^1.445.1",
 		"react": "catalog:",
 		"react-day-picker": "^9.13.0",
 		"react-dom": "catalog:",
@@ -81,6 +84,7 @@
 		"sharp": "^0.35.2",
 		"tailwindcss": "catalog:",
 		"typescript": "catalog:",
+		"vite": "^8.1.6",
 		"vitest": "^4.1.2"
 	},
 	"prettier": "@repo/prettier-config"

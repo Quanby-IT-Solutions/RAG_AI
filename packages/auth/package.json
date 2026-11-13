@@ -12,6 +12,18 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"default": "./dist/index.js"
+		},
+		"./secret-schema": {
+			"types": "./dist/secret-schema.d.ts",
+			"default": "./dist/secret-schema.js"
+		},
+		"./api-docs": {
+			"types": "./dist/api-docs.d.ts",
+			"default": "./dist/api-docs.js"
+		},
+		"./rate-limit-storage": {
+			"types": "./dist/rate-limit-storage.d.ts",
+			"default": "./dist/rate-limit-storage.js"
 		}
 	},
 	"scripts": {
@@ -28,6 +40,7 @@
 	},
 	"dependencies": {
 		"@repo/db": "workspace:*",
+		"@repo/observability": "workspace:*",
 		"@t3-oss/env-core": "catalog:",
 		"better-auth": "catalog:",
 		"drizzle-orm": "catalog:",

@@ -63,13 +63,13 @@ async function dispatch(server: ReturnType<typeof makeServer>, method: string, u
 
 	for (const layer of server.stack) {
 		if (layer.type === "get" && method === "GET" && url === layer.path) {
-			await layer.handler({ url }, res)
+			await layer.handler({ url, headers: {} }, res)
 			return { handledBy: "route" as const, body }
 		}
 
 		if (layer.type === "use") {
 			let calledNext = false
-			layer.handler({ url }, res, () => {
+			layer.handler({ url, headers: {} }, res, () => {
 				calledNext = true
 			})
 			if (!calledNext) {

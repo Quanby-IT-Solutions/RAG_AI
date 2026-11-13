@@ -5,6 +5,8 @@ import 'package:toastification/toastification.dart';
 import 'package:mobile/core/widgets/tour_item.dart';
 import 'package:mobile/features/auth/presentation/providers/auth_provider.dart';
 import 'package:mobile/features/home/presentation/providers/tour_provider.dart';
+import 'package:mobile/features/home/presentation/widgets/notification_settings_tile.dart';
+import 'package:mobile/features/home/presentation/widgets/preview_features_tile.dart';
 import 'package:mobile/features/onboarding/presentation/providers/onboarding_provider.dart';
 import 'package:mobile/core/theme/theme_provider.dart';
 import 'package:mobile/services/storage/tour_storage_service.dart';
@@ -22,9 +24,7 @@ class SettingsTab extends ConsumerWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-      ),
+      appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
           // User info section
@@ -67,7 +67,9 @@ class SettingsTab extends ConsumerWidget {
                         Text(
                           user?.email ?? '',
                           style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurface.withOpacity(0.6),
+                            color: theme.colorScheme.onSurface.withValues(
+                              alpha: 0.6,
+                            ),
                           ),
                         ),
                       ],
@@ -126,6 +128,12 @@ class SettingsTab extends ConsumerWidget {
           ),
           const SizedBox(height: 16),
 
+          // Shown only while notifications are off.
+          const NotificationSettingsTile(),
+
+          // Shown only while the `mobile-preview` PostHog flag is on.
+          const PreviewFeaturesTile(),
+
           // Actions section
           const SectionHeader(title: 'Account'),
           SettingsGroup(
@@ -141,7 +149,7 @@ class SettingsTab extends ConsumerWidget {
                   subtitle: const Text('Replay the feature tour'),
                   trailing: Icon(
                     Icons.chevron_right,
-                    color: theme.colorScheme.onSurface.withOpacity(0.3),
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
                   ),
                   onTap: () {
                     final userId = ref.read(currentUserProvider)?.id;
@@ -158,7 +166,7 @@ class SettingsTab extends ConsumerWidget {
                 subtitle: const Text('Show onboarding screens again'),
                 trailing: Icon(
                   Icons.chevron_right,
-                  color: theme.colorScheme.onSurface.withOpacity(0.3),
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.3),
                 ),
                 onTap: () async {
                   await ref
@@ -183,10 +191,7 @@ class SettingsTab extends ConsumerWidget {
                 },
               ),
               ListTile(
-                leading: Icon(
-                  Icons.logout,
-                  color: theme.colorScheme.error,
-                ),
+                leading: Icon(Icons.logout, color: theme.colorScheme.error),
                 title: Text(
                   'Sign Out',
                   style: TextStyle(color: theme.colorScheme.error),
@@ -196,8 +201,7 @@ class SettingsTab extends ConsumerWidget {
                     context: context,
                     builder: (ctx) => AlertDialog(
                       title: const Text('Sign Out'),
-                      content:
-                          const Text('Are you sure you want to sign out?'),
+                      content: const Text('Are you sure you want to sign out?'),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.of(ctx).pop(false),

@@ -1,6 +1,7 @@
 import 'package:awesome_snackbar_content/awesome_snackbar_content.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:mobile/features/auth/presentation/utils/auth_error_message.dart';
+import 'package:mobile/features/auth/presentation/utils/auth_validation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile/core/navigation/app_router.dart';
@@ -31,7 +32,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _handleSignIn() async {
     if (!_formKey.currentState!.validate()) return;
 
-    await ref.read(authStateProvider.notifier).signIn(
+    await ref
+        .read(authStateProvider.notifier)
+        .signIn(
           email: _emailController.text.trim(),
           password: _passwordController.text,
         );
@@ -42,19 +45,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (authState.hasError) {
       if (!context.mounted) return;
 
-      // Extract a user-friendly error message from the error.
-      final error = authState.error;
-      String message;
-      if (error is DioException) {
-        final data = error.response?.data;
-        if (data is Map<String, dynamic> && data.containsKey('message')) {
-          message = data['message'].toString();
-        } else {
-          message = error.response?.statusMessage ?? error.message ?? 'Unknown network error';
-        }
-      } else {
-        message = error.toString();
-      }
+      // Show a fixed, mapped string. Never `toString()`, and never
+      // the server's own text — `error.message` embeds the host and port it
+      // tried to reach, which then lands in a user's screenshot.
+      final message = authErrorMessage(authState.error);
 
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -115,7 +109,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     'Welcome Back',
                     style: theme.textTheme.headlineLarge?.copyWith(
                       fontWeight: FontWeight.w600,
-                      color: theme.colorScheme.onSurface.withOpacity(0.9),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
                       letterSpacing: -0.5,
                       height: 1.1,
                     ),
@@ -125,7 +119,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   Text(
                     'Sign in to continue',
                     style: theme.textTheme.bodyLarge?.copyWith(
-                      color: theme.colorScheme.onSurface.withOpacity(0.6),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                       height: 1.47,
                     ),
                     textAlign: TextAlign.center,
@@ -172,8 +166,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       if (value == null || value.isEmpty) {
                         return 'Password is required';
                       }
-                      if (value.length < 6) {
-                        return 'Password must be at least 6 characters';
+                      if (value.length < AuthValidation.passwordMinLength) {
+                        return AuthValidation.password(value);
                       }
                       return null;
                     },
@@ -192,7 +186,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       Text(
                         "Don't have an account?",
                         style: theme.textTheme.bodyLarge?.copyWith(
-                          color: theme.colorScheme.onSurface.withOpacity(0.6),
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.6,
+                          ),
                         ),
                       ),
                       AppTextButton(

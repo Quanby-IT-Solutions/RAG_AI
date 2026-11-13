@@ -1,5 +1,7 @@
 import 'package:awesome_snackbar_content/awesome_snackbar_content.dart';
 import 'package:flutter/material.dart';
+import 'package:mobile/features/auth/presentation/utils/auth_error_message.dart';
+import 'package:mobile/features/auth/presentation/utils/auth_validation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile/features/auth/presentation/providers/auth_provider.dart';
@@ -34,7 +36,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   Future<void> _handleSignUp() async {
     if (!_formKey.currentState!.validate()) return;
 
-    await ref.read(authStateProvider.notifier).signUp(
+    await ref
+        .read(authStateProvider.notifier)
+        .signUp(
           email: _emailController.text.trim(),
           password: _passwordController.text,
           name: _nameController.text.trim(),
@@ -54,7 +58,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             backgroundColor: Colors.transparent,
             content: AwesomeSnackbarContent(
               title: 'Sign Up Failed',
-              message: authState.error.toString(),
+              message: authErrorMessage(authState.error),
               contentType: ContentType.failure,
             ),
           ),
@@ -86,9 +90,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Create Account'),
-      ),
+      appBar: AppBar(title: const Text('Create Account')),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -102,7 +104,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     'Join Turbo Template',
                     style: theme.textTheme.headlineLarge?.copyWith(
                       fontWeight: FontWeight.w600,
-                      color: theme.colorScheme.onSurface.withOpacity(0.9),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.9),
                       letterSpacing: -0.5,
                       height: 1.1,
                     ),
@@ -112,7 +114,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   Text(
                     'Create an account to get started',
                     style: theme.textTheme.bodyLarge?.copyWith(
-                      color: theme.colorScheme.onSurface.withOpacity(0.6),
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                       height: 1.47,
                     ),
                     textAlign: TextAlign.center,
@@ -173,8 +175,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       if (value == null || value.isEmpty) {
                         return 'Password is required';
                       }
-                      if (value.length < 6) {
-                        return 'Password must be at least 6 characters';
+                      if (value.length < AuthValidation.passwordMinLength) {
+                        return AuthValidation.password(value);
                       }
                       return null;
                     },
@@ -194,8 +196,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       ),
                       onPressed: () {
                         setState(() {
-                          _obscureConfirmPassword =
-                              !_obscureConfirmPassword;
+                          _obscureConfirmPassword = !_obscureConfirmPassword;
                         });
                       },
                     ),
@@ -223,7 +224,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                       Text(
                         'Already have an account?',
                         style: theme.textTheme.bodyLarge?.copyWith(
-                          color: theme.colorScheme.onSurface.withOpacity(0.6),
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.6,
+                          ),
                         ),
                       ),
                       AppTextButton(

@@ -121,6 +121,9 @@ export function JobsPanel() {
 	const [expandedJobId, setExpandedJobId] = useState<string | null>(null)
 	const linkedJobId = searchParams.get("job")
 	useEffect(() => {
+		// Syncing from the post-hydration search param (see note above); deriving
+		// during render would mismatch SSR and break manual collapse.
+		// eslint-disable-next-line react-hooks/set-state-in-effect
 		if (linkedJobId) setExpandedJobId(linkedJobId)
 	}, [linkedJobId])
 

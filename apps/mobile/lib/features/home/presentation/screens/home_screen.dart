@@ -10,6 +10,7 @@ import 'package:mobile/features/profile/presentation/screens/profile_screen.dart
 import 'package:mobile/features/todos/presentation/screens/todos_screen.dart';
 import 'package:mobile/features/home/presentation/widgets/settings_tab.dart';
 import 'package:mobile/features/auth/presentation/providers/auth_provider.dart';
+import 'package:mobile/services/analytics/analytics_screens.dart';
 import 'package:mobile/services/storage/tour_storage_service.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -21,14 +22,45 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _checkedFirstRun = false;
-  final _showcaseKey = GlobalKey<ShowCaseWidgetState>();
+  late final ShowcaseView _showcase;
   final _tabController = PersistentTabController(initialIndex: 0);
 
-  /// Number of tabs in the bottom nav. Keep in sync with [_buildBody].
+  /// Number of tabs in the bottom nav. Keep in sync with [_buildBody] and
+  /// [AnalyticsScreens.tabs].
   static const _tabCount = 4;
+
+  /// The slide between tabs. The tour waits for it before its first step.
+  static const _tabTransition = ScreenTransitionAnimation(
+    curve: Curves.ease,
+    duration: Duration(milliseconds: 200),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    // The feature tour's controller. Registered for this screen's lifetime,
+    // which is what the deprecated ShowCaseWidget wrapper did internally.
+    _showcase = ShowcaseView.register(
+      onStart: (index, key) {
+        // Auto-navigate to the tab that owns the next showcase target.
+        final tabIndex = TourRegistry.instance.tabForKey(key);
+        if (tabIndex != null && _tabController.index != tabIndex) {
+          _tabController.jumpToTab(tabIndex);
+          ref.read(navigationControllerProvider.notifier).setTab(tabIndex);
+        }
+      },
+      onFinish: () {
+        final userId = ref.read(currentUserProvider)?.id;
+        if (userId != null) {
+          ref.read(tourStorageServiceProvider).completeTour(userId);
+        }
+      },
+    );
+  }
 
   @override
   void dispose() {
+    _showcase.unregister();
     _tabController.dispose();
     super.dispose();
   }
@@ -47,10 +79,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Return to first tab before the tour begins.
     _tabController.jumpToTab(0);
     ref.read(navigationControllerProvider.notifier).setTab(0);
+    // Wait out the tab slide: the first step measures its target's position
+    // when the tour starts, and mid-slide that position is still moving, so
+    // the highlight landed clipped beside the Home title.
+    await Future<void>.delayed(_tabTransition.duration);
     await WidgetsBinding.instance.endOfFrame;
 
-    _showcaseKey.currentState
-        ?.startShowCase(TourRegistry.instance.orderedKeys);
+    if (!mounted) return;
+    _showcase.startShowCase(TourRegistry.instance.orderedKeys);
   }
 
   @override
@@ -63,24 +99,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     });
 
-    return ShowCaseWidget(
-      key: _showcaseKey,
-      onStart: (index, key) {
-        // Auto-navigate to the tab that owns the next showcase target.
-        final tabIndex = TourRegistry.instance.tabForKey(key);
-        if (tabIndex != null && _tabController.index != tabIndex) {
-          _tabController.jumpToTab(tabIndex);
-          ref.read(navigationControllerProvider.notifier).setTab(tabIndex);
-        }
-      },
-      onFinish: () {
-        final userId = ref.read(currentUserProvider)?.id;
-        if (userId != null) {
-          ref.read(tourStorageServiceProvider).completeTour(userId);
-        }
-      },
-      builder: (showcaseContext) => _buildBody(),
-    );
+    return _buildBody();
   }
 
   Widget _buildBody() {
@@ -92,8 +111,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final userId = ref.read(currentUserProvider)?.id;
         if (userId == null) return;
-        final hasCompleted =
-            ref.read(tourStorageServiceProvider).hasCompletedTour(userId);
+        final hasCompleted = ref
+            .read(tourStorageServiceProvider)
+            .hasCompletedTour(userId);
         if (!hasCompleted) {
           _ensureAllTabsMountedThenStart();
         }
@@ -145,7 +165,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         title: 'Navigation',
         description: 'Switch between Home, Todos, and Settings tabs',
         child: Style1BottomNavBar(
-          navBarConfig: navBarConfig,
+          navBarConfig: AnalyticsScreens.recordTabTaps(navBarConfig),
           navBarDecoration: NavBarDecoration(
             color: theme.colorScheme.surface,
             border: Border(
@@ -164,10 +184,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       backgroundColor: theme.colorScheme.surface,
       handleAndroidBackButtonPress: true,
       stateManagement: true,
-      screenTransitionAnimation: const ScreenTransitionAnimation(
-        curve: Curves.ease,
-        duration: Duration(milliseconds: 200),
-      ),
+      screenTransitionAnimation: _tabTransition,
     );
   }
 }

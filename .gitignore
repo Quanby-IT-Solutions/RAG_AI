@@ -56,9 +56,18 @@ yarn-error.log*
 *.tfvars
 !*.tfvars.example
 
+# better-auth CLI output (`pnpm auth:generate`), a reference to diff against packages/db
+packages/auth/auth-schema.generated.ts
+
 # local env files
+#
+# Ignore every .env variant and re-admit only the committed templates. The
+# previous pair (`.env` + `.env*.local`) left everything else exposed —
+# `.env.backup`, `.env.production`, `.env.staging` — each of which holds the
+# same secrets as `.env`, so one `git add -A` was all it took.
 .env
-.env*.local
+.env.*
+!.env.example
 
 # vercel
 .vercel
@@ -137,6 +146,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 
 # START Ruler Generated Files
+/.agents/skills
 /.aider.conf.yml
 /.aider.conf.yml.bak
 /.claude/skills
@@ -147,6 +157,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /.codex/skills
 /.cursor/skills
 /.gemini/skills
+/.mcp.json
+/.mcp.json.bak
 /.windsurf/skills
 /AGENTS.md
 /AGENTS.md.bak

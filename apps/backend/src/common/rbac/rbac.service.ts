@@ -13,7 +13,7 @@ export class RbacService {
 	constructor(private readonly cacheService: RbacCacheService) {}
 
 	private async resolveForUser(userId: string): Promise<ResolvedPermissionSet> {
-		const cached = this.cacheService.get(userId)
+		const cached = await this.cacheService.get(userId)
 		if (cached) return cached
 
 		const rows = await db
@@ -37,7 +37,7 @@ export class RbacService {
 			if (row.permissionName) set.permissionNames.add(row.permissionName)
 		}
 
-		this.cacheService.set(userId, set)
+		await this.cacheService.set(userId, set)
 		return set
 	}
 
@@ -106,7 +106,7 @@ export class RbacService {
 
 		await db.insert(userRoles).values({ userId, roleId: role.id }).onConflictDoNothing()
 
-		this.cacheService.invalidate(userId)
+		await this.cacheService.invalidate(userId)
 	}
 
 	async removeRole(userId: string, roleName: string): Promise<void> {
@@ -120,6 +120,6 @@ export class RbacService {
 			.delete(userRoles)
 			.where(and(eq(userRoles.userId, userId), eq(userRoles.roleId, role.id)))
 
-		this.cacheService.invalidate(userId)
+		await this.cacheService.invalidate(userId)
 	}
 }

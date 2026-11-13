@@ -1,0 +1,482 @@
+/**
+ * Sentry initialisation for the backend process.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS FILE READS `process.env` DIRECTLY (documented exemption)
+ * ---------------------------------------------------------------------------
+ * Every other module reads configuration through `@/config/env.config`, which
+ * validates the whole environment at import time and throws on anything
+ * malformed. That is the right default — and exactly why it cannot be used
+ * here.
+ *
+ * Sentry's Node SDK has to `init()` BEFORE the instrumented libraries are
+ * loaded, so this module is imported at the very top of `main.ts`, ahead of
+ * `AppModule` and everything it drags in. Importing `env.config.ts` from here
+ * would move full fail-fast env validation onto the error-reporting critical
+ * path: a single unrelated misconfigured variable would throw before Sentry
+ * exists, i.e. the process would lose its crash reporter precisely in the
+ * situation the reporter was installed to observe.
+ *
+ * So this file reads the four Sentry variables straight off `process.env` and
+ * degrades to a no-op on anything it does not like. The same variables are ALSO
+ * declared (typed, defaulted, validated) in `@/config/env.config` for the rest
+ * of the app — see the matching note there. The duplication is deliberate and
+ * bounded to these keys.
+ */
+import type { Attributes } from "@opentelemetry/api"
+import * as Sentry from "@sentry/nestjs"
+
+import {
+	REDACTED_FIELD_NAMES,
+	REDACTED_QUERY_PARAMS,
+	REDACTED_VALUE,
+	redactSqlParams,
+	sanitizeLogQuery,
+	sanitizeLogUrl,
+} from "@repo/observability"
+
+import { readOtelConfig } from "@/config/otel-config"
+import { pinoTraceIds } from "@/telemetry/pino-trace-ids"
+import { scrubSpanAttributes } from "@/telemetry/scrubbing-span-exporter"
+import { isHealthCheckPath } from "@/utils/health-check"
+import { omitUnloggedRequestHeaders } from "@/utils/unlogged-request-headers"
+
+/** Shape returned by the development-only diagnostics endpoint (Flow 4). */
+export interface SentryDiagnostics {
+	/** True only when the flag is on, the DSN is present, and it parsed. */
+	enabled: boolean
+	/** `SENTRY_ENVIRONMENT`, falling back to `NODE_ENV`. */
+	environment: string
+	/** `IMAGE_TAG`, reported to Sentry as the release. Undefined outside CI builds. */
+	release?: string
+	/** Whether the configured DSN parsed as a Sentry DSN. Never echoes the DSN itself. */
+	dsnParsed: boolean
+	/** Populated only when initialisation was skipped for a reason worth surfacing. */
+	warning?: string
+}
+
+/**
+ * The one request path excluded from tracing.
+ *
+ * Load balancers poll it continuously, so it would dominate the trace quota
+ * while carrying no diagnostic value.
+ */
+
+const deniedFieldNames = new Set<string>(REDACTED_FIELD_NAMES.map(name => name.toLowerCase()))
+const deniedQueryParams = new Set<string>(REDACTED_QUERY_PARAMS.map(name => name.toLowerCase()))
+
+/**
+ * Remove every deny-listed key from a plain object.
+ *
+ * Keys are DELETED rather than masked, mirroring the pino logger's
+ * `redact: { remove: true }`: the two paths must not disagree about whether a
+ * credential leaves the process.
+ *
+ * `nested` walks exactly one level down, matching the `req.body.*` half of
+ * `PINO_REDACT_PATHS` — Better Auth and the oRPC handlers both wrap payloads in
+ * a single envelope object.
+ */
+function stripDeniedKeys<T>(value: T, nested: boolean): T {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return value
+	}
+
+	const result: Record<string, unknown> = {}
+
+	for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+		if (deniedFieldNames.has(key.trim().toLowerCase())) {
+			continue
+		}
+		result[key] = nested ? stripDeniedKeys(entry, false) : entry
+	}
+
+	return result as T
+}
+
+/**
+ * Redact credential-bearing parameters from a query, in any of the shapes the
+ * SDK produces.
+ *
+ * The SDK models `request.query_string` (and the query a breadcrumb records) as
+ * a raw string, an object, or an array of pairs depending on how the request was
+ * captured, so all three shapes are handled here rather than trusting one. Each
+ * shape delegates to the canonical `@repo/observability` helper for its form —
+ * `sanitizeLogUrl` for the string, `sanitizeLogQuery` for the parsed object — so
+ * the Sentry path cannot redact a different set of parameters than the logger.
+ */
+function stripDeniedQuery(queryString: unknown): unknown {
+	if (!queryString) {
+		return queryString
+	}
+
+	if (typeof queryString === "string") {
+		// `sanitizeLogUrl` needs a `?` to find the query; add one and drop it again.
+		const sanitized = sanitizeLogUrl(`?${queryString}`)
+		return sanitized ? sanitized.slice(1) : queryString
+	}
+
+	if (Array.isArray(queryString)) {
+		return queryString.map(pair => {
+			if (!Array.isArray(pair) || pair.length === 0) {
+				return pair
+			}
+			const [name, value] = pair as [unknown, unknown]
+			return typeof name === "string" && deniedQueryParams.has(name.trim().toLowerCase())
+				? [name, REDACTED_VALUE]
+				: [name, value]
+		})
+	}
+
+	if (typeof queryString === "object") {
+		return sanitizeLogQuery(queryString as Record<string, unknown>)
+	}
+
+	return queryString
+}
+
+/**
+ * Remove the inbound request id from a Sentry request, plus the credential
+ * deny-list this sink already shares with the logger.
+ *
+ * `x-request-id` is not a credential (it stays off the shared observability
+ * list). It is dropped because the only id that may be stored is the one this
+ * server assigned, which is sent as the `request_id` tag rather than as a header.
+ */
+/**
+ * A request body as Sentry may keep it. The SDK records a JSON body as the raw
+ * string (captured 11/4: a sign-in password arrived that way), so a string is
+ * parsed and scrubbed like an object; one that is not JSON is dropped, because
+ * nothing can say which part of it is the credential.
+ */
+function scrubRequestData(data: unknown): unknown {
+	if (typeof data !== "string") return stripDeniedKeys(data, true)
+	try {
+		return JSON.stringify(stripDeniedKeys(JSON.parse(data) as unknown, true))
+	} catch {
+		return FILTERED_BODY
+	}
+}
+
+/** What a request body string that is not JSON becomes. */
+const FILTERED_BODY = "[Filtered]"
+
+/** How deep `redactSqlParamsDeep` walks; Sentry events are shallow JSON. */
+const MAX_SQL_SCRUB_DEPTH = 12
+
+/**
+ * Every string in a value with SQL params redacted (`redactSqlParams`).
+ *
+ * A failed query's message, bound values included, travels in the exception
+ * value, the console breadcrumb Better Auth's logger leaves, extra data and
+ * stack strings, so the whole outbound event is walked instead of naming each
+ * place. Returns a copy.
+ */
+function redactSqlParamsDeep<T>(value: T, depth = 0): T {
+	if (typeof value === "string") return redactSqlParams(value) as T
+	if (value === null || typeof value !== "object" || depth >= MAX_SQL_SCRUB_DEPTH) return value
+	if (Array.isArray(value)) return value.map(item => redactSqlParamsDeep(item, depth + 1)) as T
+	const result: Record<string, unknown> = {}
+	for (const [key, entry] of Object.entries(value)) {
+		result[key] = redactSqlParamsDeep(entry, depth + 1)
+	}
+	return result as T
+}
+
+function scrubSentryRequest<T extends Sentry.Event>(event: T): T {
+	const request = event.request
+	if (!request) {
+		return event
+	}
+
+	const scrubbed: Record<string, unknown> = {
+		...request,
+		url: sanitizeLogUrl(request.url),
+	}
+
+	if (request.headers) {
+		scrubbed.headers = omitUnloggedRequestHeaders(stripDeniedKeys(request.headers, false))
+	}
+
+	// The `cookie` header is on the deny-list, so its parsed twin must go too —
+	// otherwise the exact value just removed comes back in a tidier shape.
+	delete scrubbed.cookies
+
+	if (request.query_string !== undefined) {
+		scrubbed.query_string = stripDeniedQuery(request.query_string)
+	}
+
+	if (request.data !== undefined) {
+		scrubbed.data = scrubRequestData(request.data)
+	}
+
+	return { ...event, request: scrubbed as typeof request }
+}
+
+/**
+ * A transaction's span data, scrubbed by the same rules as OTLP export
+ * (`scrubSpanAttributes`).
+ *
+ * The inbound request id rides on span attributes as
+ * `http.request.header.x_request_id`; `sendDefaultPii: false` does not remove
+ * it (that deny-list is PII snippets plus sensitive key snippets, and this name
+ * matches neither). Response-header attributes are kept: that value is the id
+ * the server echoed. Sentry's HTTP spans also carry the raw URL, query included,
+ * in `url.full`, `http.target`, `http.url` and `http.query`.
+ */
+function scrubSpanData<T extends Sentry.Event>(event: T): T {
+	const trace = event.contexts?.trace
+	const traceData = trace && typeof trace.data === "object" && trace.data ? trace.data : undefined
+	let next = event
+
+	if (traceData) {
+		next = {
+			...next,
+			contexts: { ...next.contexts, trace: { ...trace, data: scrubSpanAttributes(traceData) } },
+		}
+	}
+
+	if (next.spans) {
+		next = { ...next, spans: next.spans.map(span => scrubSentrySpan(span)) }
+	}
+
+	return next
+}
+
+/**
+ * Scrub an outbound event.
+ *
+ * Exported so the scrubbing contract is unit-testable without initialising the
+ * SDK: this is the last point at which a credential or an unvalidated request
+ * id can be kept inside the process, so it is asserted directly rather than
+ * inferred.
+ */
+export function scrubSentryEvent<T extends Sentry.Event>(event: T): T {
+	return redactSqlParamsDeep(scrubSpanData(scrubSentryRequest(event)))
+}
+
+/** `beforeSendSpan` sees the span on its own, before it is folded into a transaction. */
+export function scrubSentrySpan<T extends { data?: object; description?: string }>(span: T): T {
+	return {
+		...span,
+		...(span.data && { data: scrubSpanAttributes(span.data as Attributes) }),
+		// HTTP client span descriptions carry the full URL (`GET http://host/x?token=`).
+		...(span.description && { description: sanitizeLogUrl(span.description) }),
+	}
+}
+
+/**
+ * Keys under which a breadcrumb can carry a query that was already parsed out
+ * of the URL.
+ *
+ * The deny-list of structured field names does not cover these: `state`, `code`
+ * and the OAuth token parameters are credentials *as query parameters*, so they
+ * only appear in `REDACTED_QUERY_PARAMS`. A breadcrumb that records the query as
+ * an object instead of leaving it in the URL string would otherwise export them
+ * verbatim — the one shape `sanitizeLogUrl` cannot see.
+ */
+const BREADCRUMB_QUERY_KEYS = ["query", "query_string", "http.query", "params"] as const
+
+/**
+ * Scrub a breadcrumb: same deny-list, plus the URL and any parsed query these
+ * usually carry.
+ */
+export function scrubSentryBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb {
+	if (!breadcrumb.data) {
+		return redactSqlParamsDeep(breadcrumb)
+	}
+
+	const data = stripDeniedKeys(breadcrumb.data, true)
+
+	if (typeof data.url === "string") {
+		data.url = sanitizeLogUrl(data.url)
+	}
+
+	for (const key of BREADCRUMB_QUERY_KEYS) {
+		if (data[key] !== undefined) {
+			data[key] = stripDeniedQuery(data[key])
+		}
+	}
+
+	return redactSqlParamsDeep({ ...breadcrumb, data })
+}
+
+/**
+ * Whether a span describes the health check.
+ *
+ * Several attribute names carry the path depending on the instrumentation that
+ * produced the span, so every plausible carrier is checked — missing one just
+ * means paying for a span nobody reads.
+ */
+export function isHealthCheckSpan(name: string, attributes?: Record<string, unknown>): boolean {
+	const candidates: unknown[] = [
+		name,
+		attributes?.["http.route"],
+		attributes?.["url.path"],
+		attributes?.["http.target"],
+	]
+
+	return candidates.some(value => typeof value === "string" && isHealthCheckPath(value))
+}
+
+/**
+ * Basic structural check on a DSN.
+ *
+ * Not a Sentry-side validation — it only catches the mistakes that would
+ * otherwise fail silently at send time (a placeholder left in `.env`, a
+ * truncated paste), so the process can say so once at boot instead.
+ */
+function isParseableDsn(dsn: string): boolean {
+	try {
+		const url = new URL(dsn)
+
+		if (url.protocol !== "https:" && url.protocol !== "http:") {
+			return false
+		}
+		// The public key travels as the userinfo component.
+		if (!url.username) {
+			return false
+		}
+		// ...and the project id as the last path segment.
+		return url.pathname.split("/").filter(Boolean).length > 0
+	} catch {
+		return false
+	}
+}
+
+function parseSampleRate(raw: string | undefined): number {
+	const parsed = Number.parseFloat(raw ?? "0")
+
+	if (!Number.isFinite(parsed)) {
+		return 0
+	}
+
+	return Math.min(1, Math.max(0, parsed))
+}
+
+/**
+ * How Sentry shares OpenTelemetry with `src/telemetry.ts`.
+ *
+ * OTel export on: `telemetry.ts` owns the one provider (Sentry's documented v10
+ * custom setup), so Sentry skips its own, and its HTTP spans are turned off
+ * because `telemetry.ts` instruments HTTP itself; Sentry keeps request
+ * isolation. Read silently here: `telemetry.ts` gives the one warning.
+ *
+ * OTel export off: Sentry keeps its own setup, plus the pino instrumentation
+ * so log lines carry trace ids whenever Sentry traces.
+ */
+function openTelemetryOptions(): Partial<Sentry.NodeOptions> {
+	if (readOtelConfig(process.env, () => {})) {
+		return {
+			skipOpenTelemetrySetup: true,
+			integrations: defaults => [
+				...defaults.filter(integration => integration.name !== "Http"),
+				Sentry.httpIntegration({ spans: false, tracePropagation: false }),
+			],
+		}
+	}
+	return { openTelemetryInstrumentations: [pinoTraceIds()] }
+}
+
+function initializeSentry(): SentryDiagnostics {
+	const dsn = process.env.SENTRY_DSN?.trim()
+	const environment = process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? "development"
+	const release = process.env.IMAGE_TAG
+	const flagEnabled = process.env.SENTRY_ENABLED === "true"
+
+	// A DSN with no flag is a value parked in the environment for later, not
+	// consent to start shipping events — and not worth a log line either.
+	if (!flagEnabled) {
+		return { enabled: false, environment, release, dsnParsed: false }
+	}
+
+	// The flag is on, so events were meant to be shipped somewhere. A missing DSN
+	// is an unfinished deployment, i.e. a misconfiguration the operator has to be
+	// told about — same treatment as a malformed one below.
+	if (!dsn) {
+		const warning =
+			"SENTRY_ENABLED=true but SENTRY_DSN is missing or empty. " +
+			"Sentry is DISABLED for this process. " +
+			"Set SENTRY_DSN (Sentry > Project Settings > Client Keys), or unset SENTRY_ENABLED."
+		console.warn(`[sentry] ${warning}`)
+		return { enabled: false, environment, release, dsnParsed: false, warning }
+	}
+
+	if (!isParseableDsn(dsn)) {
+		const warning =
+			"SENTRY_ENABLED=true but SENTRY_DSN is not a valid Sentry DSN " +
+			"(expected https://<publicKey>@<host>/<projectId>). Sentry is DISABLED for this process. " +
+			"Copy the DSN from Sentry > Project Settings > Client Keys, or unset SENTRY_ENABLED."
+		// Warn, never throw: a mistyped observability credential must not be
+		// able to stop the service it was meant to observe.
+		console.warn(`[sentry] ${warning}`)
+		return { enabled: false, environment, release, dsnParsed: false, warning }
+	}
+
+	const tracesSampleRate = parseSampleRate(process.env.SENTRY_TRACES_SAMPLE_RATE)
+
+	Sentry.init({
+		dsn,
+		environment,
+		release,
+		tracesSampleRate,
+		// Never attach IPs, cookies or headers on the SDK's own initiative. What
+		// reaches Sentry is only what the hooks below have already scrubbed.
+		sendDefaultPii: false,
+		// Drop the health check before a span is even created — cheaper than
+		// sampling it in and discarding it in `beforeSendTransaction`.
+		tracesSampler: samplingContext =>
+			isHealthCheckSpan(samplingContext.name, samplingContext.attributes)
+				? 0
+				: samplingContext.inheritOrSampleWith(tracesSampleRate),
+		beforeSend: event => scrubSentryEvent(event),
+		// Transaction events do carry `request.headers`. `@sentry/node` installs
+		// `requestDataIntegration` by default. Its `processEvent` is a client event
+		// processor, and `prepareEvent` runs those processors for every event,
+		// including `type: "transaction"`. The processor copies
+		// `sdkProcessingMetadata.normalizedRequest` — set on the request isolation
+		// scope by the HTTP server integration (`http.server.request.start`) — onto
+		// `event.request`, headers included. With `sendDefaultPii: false`,
+		// `httpHeaders.request` is `{ deny: PII snippets }`, which is not `false`,
+		// so the headers are copied in full; the deny-list filters span attributes,
+		// not `event.request.headers`. `beforeSend` is not called for transactions
+		// (`processBeforeSend` uses it only when `event.type` is undefined), so the
+		// same scrub runs here. A captured transaction confirmed both
+		// `request.headers["x-request-id"]` and
+		// `contexts.trace.data["http.request.header.x_request_id"]` held the inbound
+		// value, and `request.headers.authorization` was still the raw header.
+		beforeSendTransaction: event => scrubSentryEvent(event),
+		beforeSendSpan: span => scrubSentrySpan(span),
+		beforeBreadcrumb: breadcrumb => scrubSentryBreadcrumb(breadcrumb),
+		...openTelemetryOptions(),
+	})
+
+	// Development convenience: one line confirming monitoring is actually on,
+	// carrying the environment and release every event will be tagged with, and
+	// pointing at the endpoint that answers the same question later.
+	//
+	// Gated on a successful init as well as on development: with Sentry disabled
+	// the process must boot exactly as it did before this file existed, and a
+	// malformed DSN must produce the single actionable warning above and nothing
+	// else. `PORT` is not validated yet at this point in the boot, so it is read
+	// raw with the same default `env.config.ts` applies — this is a log line, not
+	// configuration.
+	if (process.env.NODE_ENV === "development") {
+		const port = process.env.PORT ?? "3000"
+		console.log(
+			`[sentry] enabled (environment=${environment}, release=${release ?? "none"}) ` +
+				`diagnostics: http://localhost:${port}/api/v1/diagnostics/sentry`
+		)
+	}
+
+	return { enabled: true, environment, release, dsnParsed: true }
+}
+
+const diagnostics: SentryDiagnostics = initializeSentry()
+
+/**
+ * Current Sentry state, for the development diagnostics endpoint and any
+ * startup logging. Never exposes the DSN — only whether it parsed.
+ */
+export function getSentryDiagnostics(): SentryDiagnostics {
+	return { ...diagnostics }
+}

@@ -4,53 +4,56 @@ packages:
   - tooling/*
 
 catalog:
-  '@better-auth/cli': 1.4.12
-  '@eslint/js': ^9.39.2
-  '@nestjs/common': ^11.1.11
-  '@nestjs/core': ^11.1.11
-  '@orpc/contract': ^1.13.4
-  '@orpc/nest': ^1.13.4
-  '@t3-oss/env-core': ^0.13.10
-  '@t3-oss/env-nextjs': ^0.13.10
-  '@tailwindcss/postcss': ^4.1.18
-  '@tanstack/eslint-plugin-query': ^5.91.2
-  '@tanstack/react-form': ^1.27.7
-  '@tanstack/react-query': ^5.90.16
-  '@turbo/gen': ^2.7.3
-  '@types/node': ^22.19.3
-  '@types/pg': ^8.16.0
-  '@types/react': 19.2.7
-  '@types/react-dom': 19.2.3
-  better-auth: 1.4.12
+  # The Better Auth CLI (`pnpm auth:generate`). Keep it on the same version as better-auth.
+  auth: 1.7.15
+  "@eslint/js": ^9.39.2
+  "@nestjs/common": ^11.2.7
+  "@nestjs/core": ^11.2.7
+  "@orpc/contract": ^1.13.4
+  "@orpc/nest": ^1.13.4
+  "@sentry/nestjs": ^10.70.0
+  "@sentry/nextjs": 10.75.2
+  "@tailwindcss/postcss": ^4.3.3
+  "@tanstack/eslint-plugin-query": ^5.91.2
+  "@tanstack/react-form": ^1.27.7
+  "@tanstack/react-query": ^5.90.16
+  "@t3-oss/env-core": ^0.13.10
+  "@t3-oss/env-nextjs": ^0.13.10
+  "@turbo/gen": ^2.11.9
+  "@types/node": ^22.19.3
+  "@types/pg": ^8.16.0
+  "@types/react": 19.2.7
+  "@types/react-dom": 19.2.3
+  better-auth: 1.7.15
   dotenv: ^16.6.1
   drizzle-orm: 1.0.0-beta.9-e89174b
   eslint: ^9.39.2
   nestjs-zod: ^5.1.1
-  next: 16.1.1
+  next: 16.4.1
   pg: ^8.16.3
   prettier: ^3.7.4
   react: 19.2.3
   react-dom: 19.2.3
-  tailwindcss: ^4.1.18
+  tailwindcss: ^4.3.3
   tsx: ^4.21.0
-  turbo: ^2.7.3
+  turbo: ^2.11.9
   typescript: ^5.9.3
   typescript-eslint: ^8.52.0
-  zod: ^4.3.5
+  zod: 4.6.6
 
 catalogs:
   react19:
-    '@types/react': ^19.2.7
-    '@types/react-dom': ^19.2.3
+    "@types/react": ^19.2.7
+    "@types/react-dom": ^19.2.3
     react: 19.2.3
     react-dom: 19.2.3
 
 linkWorkspacePackages: true
 
 onlyBuiltDependencies:
-  - '@nestjs/core'
-  - '@scarf/scarf'
-  - '@swc/core'
+  - "@nestjs/core"
+  - "@scarf/scarf"
+  - "@swc/core"
   - argon2
   - better-sqlite3
   - core-js-pure
@@ -60,10 +63,44 @@ onlyBuiltDependencies:
   - unrs-resolver
 
 overrides:
-  '@types/minimatch': 5.1.2
-  '@types/react': 19.2.7
-  '@types/react-dom': 19.2.3
+  "@types/minimatch": 5.1.2
+  "@types/mssql": "-"
+  "@types/react": 19.2.7
+  "@types/react-dom": 19.2.3
+  "argparse@>=1 <2>sprintf-js": "-"
+  "gel": "-"
+  "@graphql-tools/utils@<12.0.1": ">=12.0.1 <13"
+  "handlebars@<4.7.10": ">=4.7.10 <5"
+  "mssql": "-"
+  "proxy-addr@<2.0.8": ">=2.0.8 <3"
+  "picomatch@>=4 <4.0.4": ">=4.0.4 <5"
+  "ajv@>=8 <8.18.0": ">=8.18.0 <9"
+  "lodash@>=4 <4.18.0": ">=4.18.0 <5"
+  "js-yaml@>=5 <5.4.1": ">=5.4.1 <5.5.0"
+  "http-cache-semantics@<4.3.0": ">=4.3.0 <5"
+  # No @nestjs/platform-express release depends on multer >=2.5.0 (11.2.8 and
+  # 12.2.0 both pin 2.4.0). Express 5.3.0 still accepts body-parser ^2.3.0, so
+  # a parent bump does not force both floors.
+  "body-parser@<2.4.0": ">=2.4.0 <3"
+  "multer@<2.5.0": ">=2.5.0 <3"
+  # @serwist/build and @serwist/turbopack 9.5.13 (latest) depend on zod 4.6.5.
+  # @better-auth/core and eslint-plugin-react-hooks accept zod 4.x below 4.6.6,
+  # and no current parent release raises that floor. Replaces drizzle-orm>zod 4.3.5.
+  "zod@>=4.0.0 <4.6.6": "4.6.6"
+  # The override below replaces @next/eslint-plugin-next's fast-glob with
+  # tinyglobby. While it is in place, settings.next.rootDir must be a wildcard
+  # pattern (e.g. "apps/*/"): a literal path makes the replacement scan the
+  # whole tree. Remove this override once @next/eslint-plugin-next stops
+  # pinning fast-glob 3.3.1, or when upstream ships a fix, and re-run lint
+  # after removing it.
+  "@next/eslint-plugin-next>fast-glob": "npm:tinyglobby@^0.2.15"
+
+# Local fixes for advisories with no usable upstream release. Each patch file
+# says what it changes; drop the entry once the dependency ships the fix.
+patchedDependencies:
+  deepmerge@4.3.1: patches/deepmerge@4.3.1.patch
+  glob@13.0.6: patches/glob@13.0.6.patch
 
 publicHoistPattern:
-  - '@ianvs/prettier-plugin-sort-imports'
+  - "@ianvs/prettier-plugin-sort-imports"
   - prettier-plugin-tailwindcss

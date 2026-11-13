@@ -1,4 +1,4 @@
-package com.example.mobile
+package com.quanbyit.ragai
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -2,8 +2,14 @@
 
 import { useRouter } from "next/navigation"
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 
+import { resetAnalyticsIdentity } from "@/services/analytics/posthog-identity"
 import { authClient } from "@/services/better-auth/auth-client"
+import {
+	purgePersistedCache,
+	writeCacheIdentity,
+} from "@/services/tanstack-query/cache-persistence"
 
 /**
  * Centralized query keys for session-related queries.
@@ -32,10 +38,24 @@ export const sessionOptions = queryOptions({
 	retry: false,
 })
 
+/** The sign-out request itself failed. The session and the on-device cache are unchanged. */
+class SignOutRequestError extends Error {
+	constructor() {
+		super("Sign-out did not complete")
+		this.name = "SignOutRequestError"
+	}
+}
+
 /**
  * Mutation hook for signing out the current user.
  *
- * Invalidates the session query and redirects to home page on success.
+ * Purges every trace of the session's cached data, then redirects home.
+ *
+ * The order is normative: memory first
+ * (`queryClient.clear()`), then disk (`purgePersistedCache()`), then navigate.
+ * Clearing memory first stops the persister from re-writing a snapshot after
+ * the delete; navigating last means a purge failure surfaces as a failed
+ * sign-out rather than a silent hand-over of the previous user's data.
  */
 export function useSignOutMutation() {
 	const router = useRouter()
@@ -45,14 +65,35 @@ export function useSignOutMutation() {
 		mutationFn: async () => {
 			const result = await authClient.signOut()
 			if (result.error) {
-				throw new Error(result.error.message || "Failed to sign out")
+				throw new SignOutRequestError()
 			}
+			// The purge lives in `mutationFn`, not `onSuccess`: a throw here is
+			// unambiguously a failed mutation, so the error state and the toast
+			// below actually fire. A throw from a success callback is not a
+			// dependable error channel.
+			queryClient.clear()
+			await purgePersistedCache()
+			writeCacheIdentity(null)
+			// Before the navigation below: the page it lands on records a
+			// pageview, and that pageview must already be anonymous.
+			resetAnalyticsIdentity()
+
 			return result
 		},
 		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: sessionKeys.all })
 			router.push("/")
 			router.refresh()
+		},
+		// A failed sign-out request leaves the session in place. A purge that
+		// throws leaves a readable snapshot on disk. Say which one happened
+		// rather than navigating away as though sign-out were complete.
+		onError: error => {
+			toast.error(
+				error instanceof SignOutRequestError
+					? "Sign-out did not complete. You are still signed in."
+					: "Sign-out could not clear this device's cached data. Please try again.",
+				{ id: "sign-out-error" }
+			)
 		},
 	})
 }

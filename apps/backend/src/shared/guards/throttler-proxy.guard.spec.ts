@@ -18,6 +18,16 @@ jest.mock("@/config/env.config", () => ({
 	isApiDocsEnabled: () => false,
 }))
 
+// The guard now resolves the session via `better-auth/node` + `@repo/auth`, both
+// ESM-only and un-require()-able by Jest on Node < 24.9. Stub what the guard uses;
+// a null session exercises the anonymous (per-IP) throttling path these tests cover.
+jest.mock("better-auth/node", () => ({
+	fromNodeHeaders: (headers: unknown) => headers,
+}))
+jest.mock("@repo/auth", () => ({
+	getAuth: () => ({ api: { getSession: async () => null } }),
+}))
+
 // Small limits so tests can exhaust each window in a handful of requests.
 const DEFAULT_LIMIT = 3
 const STRICT_LIMIT = 2
