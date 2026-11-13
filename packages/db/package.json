@@ -55,7 +55,7 @@
 		"@types/node": "catalog:",
 		"@types/pg": "catalog:",
 		"dotenv": "catalog:",
-		"drizzle-kit": "1.0.0-beta.9-e89174b",
+		"drizzle-kit": "1.0.0-beta.20",
 		"eslint": "catalog:",
 		"prettier": "catalog:",
 		"tsx": "catalog:",
