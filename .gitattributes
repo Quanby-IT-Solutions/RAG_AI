@@ -1,0 +1,5 @@
+# Keep line endings deterministic for files whose exact bytes are asserted by
+# tests. The mobile suite checks `MainActivity.kt` starts with `package …\n`, so
+# Kotlin (and Dart, for parity) must stay LF even on Windows checkouts.
+*.kt text eol=lf
+*.dart text eol=lf

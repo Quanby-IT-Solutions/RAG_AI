@@ -44,7 +44,7 @@
 		"@t3-oss/env-core": "catalog:",
 		"better-auth": "catalog:",
 		"drizzle-orm": "catalog:",
-		"nodemailer": "^6.9.16",
+		"nodemailer": "^10.1.4",
 		"zod": "catalog:"
 	},
 	"devDependencies": {
