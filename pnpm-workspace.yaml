@@ -147,12 +147,11 @@ overrides:
   # Cross-major transitive fixes (no in-major patch exists for the installed line).
   "serialize-javascript@>=6.0.0 <7.0.0": ">=7.0.3 <8.0.0"
   "file-type@>=20.0.0 <21.0.0": ">=21.3.2 <22.0.0"
-  # Low-severity in-major transitive bumps. @babel/core and webpack are left
-  # unpinned on purpose: overriding them perturbs Next's build toolchain (OOM in
-  # the babel loader), and both advisories are low.
+  # Low-severity in-major transitive bumps.
   "cookie@>=0.0.0 <0.7.0": ">=0.7.0 <0.8.0"
   "debug@>=4.0.0 <4.3.1": ">=4.3.1 <5.0.0"
   "diff@>=4.0.0 <4.0.4": ">=4.0.4 <5.0.0"
+  "webpack@>=5.49.0 <5.104.1": ">=5.104.1 <6.0.0"
 
 # Local fixes for advisories with no usable upstream release. Each patch file
 # says what it changes; drop the entry once the dependency ships the fix.
